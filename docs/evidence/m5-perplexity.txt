@@ -1,0 +1,88 @@
+M5 quality loss: perplexity of F32 vs Q8_0 vs Q4_0, on real wikitext-2-raw-v1
+(the standard small perplexity benchmark text; also what llama.cpp's own examples use),
+compared against llama.cpp quantizing the exact same weights the same way.
+
+METHODOLOGY
+
+Token ids: tools/make_ppl_ids.py tokenizes a prefix of the wikitext-2-raw-v1 test split
+(HF dataset Salesforce/wikitext) with each model's own Hugging Face tokenizer, so the SAME
+ids are reused for every --quant run -- quantization's effect on perplexity is never
+confounded by a different tokenization. SmolLM2: 4096 ids (24576 source chars).
+Qwen2.5: 1024 ids (6144 source chars) -- a smaller sample, chosen because Qwen2.5's bigger
+hidden size and huge (151,936-entry) vocabulary make every forward() call on this
+2-core sandbox considerably slower (see m5-speed-and-memory.txt); evaluating the full
+wikitext-2 test set (about 245,000 tokens) at Q4_0 speeds would take many hours here.
+
+Scoring: llmi-perplexity (apps/llmi-perplexity) splits the sequence into non-overlapping
+512-token chunks and, by DEFAULT, scores only the SECOND HALF of each chunk (log P(token[t]
+| token[0..t-1]) for t in [256, 512)) -- the same convention llama.cpp's own perplexity tool
+uses by default (tools/perplexity/perplexity.cpp: "calculate the perplexity over the last
+half of the window, so the model always has some context to predict the token"). This
+project's own first attempt at this tool scored every position in every chunk instead
+(minimal or no left-context for early positions), which is a well-defined but DIFFERENT,
+NOT-comparable-to-llama.cpp metric -- independently confirmed correct for THAT metric
+against a Hugging Face transformers reference computing the identical quantity (full-window,
+SmolLM2 F32: llmi-perplexity 23.3171, transformers reference 23.31695 on the same 4096 ids,
+effectively exact). --full-window on llmi-perplexity restores that metric if wanted; every
+number below uses the default (half-window, llama.cpp-comparable) metric.
+
+llama.cpp side: commit ec7630a (same build as M4's docs/evidence/m4-llamacpp-comparison.txt),
+llama-quantize converting this project's own f32 GGUFs (the exact ones M4 already built) to
+Q8_0 and Q4_0, then llama-perplexity on the identical wikitext-2 text slice:
+  llama-quantize MODEL-f32.gguf MODEL-q8_0.gguf Q8_0
+  llama-quantize MODEL-f32.gguf MODEL-q4_0.gguf Q4_0
+  llama-perplexity -m MODEL-TYPE.gguf -f wikitext_slice.txt -c 512 --chunks N -t 2
+(N = 8 for SmolLM2's 4096-token slice, 2 for Qwen2.5's 1024-token slice.)
+
+RESULTS (perplexity; lower is better; llama.cpp's own number alongside for the same weights)
+
+SmolLM2-135M-Instruct (2040 scored tokens):
+  F32:   this engine 18.9581   llama.cpp 18.9581   (exact match -- same metric, same weights)
+  Q8_0:  this engine 18.9922 (+0.18%)   llama.cpp 19.0250 (+0.35%)
+  Q4_0:  this engine 25.8341 (+36.3%)   llama.cpp 23.2110 (+22.4%)
+
+Qwen2.5-0.5B-Instruct (510 scored tokens):
+  F32:   this engine 13.1518   llama.cpp 13.1494   (effectively exact; the ~0.02% gap is
+                                                     floating-point summation-order noise,
+                                                     not a real difference)
+  Q8_0:  this engine 13.1513 (-0.00%)   llama.cpp 13.2081 (+0.45%)
+  Q4_0:  this engine 14.5068 (+10.3%)   llama.cpp 13.9677 (+6.2%)
+
+FINDING 1: a real bug, found and fixed before these numbers were final. The first Q4_0
+implementation scaled every block by scale = amax/8 (amax = the block's largest |value|),
+clamping q to [-8, 7] -- but Q4_0's range is ASYMMETRIC (one more negative code than
+positive, since 0 must be representable), so whichever sign happened to hold the block's
+single most important value always needed code +8, got clamped to +7, and lost up to a
+whole quantization step on exactly the value quantization error affects most. Numbers
+before the fix: SmolLM2 Q4_0 28.0145 (+47.8%), Qwen2.5 Q4_0 15.9795 (+21.5%) -- both notably
+worse than llama.cpp's own Q4_0 on the identical weights, which was the tell that something
+was actually wrong, not just "4-bit is lossy". Fixed by
+taking the scale's SIGN from the block's extreme value (GGUF's own Q4_0 convention,
+confirmed by reading ggml's quantize_row_q4_0_reference): d = signed_extreme / -8. That
+value's rounding then always lands on code -8 (which does exist) and reconstructs exactly,
+regardless of its sign -- tests/quant_test.cpp's Q4_0ExtremeValueInEachBlockRoundTripsExactly
+checks this directly. After the fix: SmolLM2 Q4_0 25.8341 (was 28.0145), Qwen2.5 Q4_0
+14.5068 (was 15.9795) -- both closer to llama.cpp, though not identical (see Finding 2).
+
+FINDING 2 (not a bug, a real remaining gap): this engine's Q4_0 still loses somewhat more
+quality than llama.cpp's own Q4_0 on the identical weights (+36.3% vs +22.4% on SmolLM2;
++10.3% vs +6.2% on Qwen2.5). The scale-sign fix (Finding 1) closed most of the gap but not
+all of it. Plausible remaining differences, not chased further here: ggml stores each
+block's scale as an IEEE half-float (2 bytes), this engine as a full float32 (4 bytes) --
+a half-float scale is slightly less precise, which would make llama.cpp's number slightly
+WORSE, not better, so that's not the explanation; more likely a difference in the rounding
+function itself (this engine uses std::lround, round-half-away-from-zero; ggml's reference
+uses a plain (int8_t)(x + 8.5f) cast, which rounds differently right at a .5 boundary) or in
+how ties for a block's "largest |value|" are broken when more than one weight shares it.
+Left as a documented, measured gap rather than a guess chased to zero (ADR 0006).
+
+FINDING 3: Q8_0's quality loss is negligible on both models (well under 0.5%, close to
+llama.cpp's own Q8_0 loss) -- as expected for 8 bits with a per-32-weight scale. Q4_0's loss
+is real and model-size-dependent: much larger on SmolLM2 (135M params, +36.3%) than on
+Qwen2.5 (494M params, +10.3%) -- consistent with the well-known pattern that smaller models
+are more sensitive to aggressive quantization (less redundancy in the weights to absorb the
+rounding error). This matches the ordering llama.cpp's own numbers show too.
+
+Reproduce:
+python3 tools/make_ppl_ids.py MODEL_DIR --out ids.txt --target-tokens 4096
+build-perf/llmi-perplexity MODEL_DIR --ids-file ids.txt --ctx 512 --quant f32  # or q8_0 / q4_0

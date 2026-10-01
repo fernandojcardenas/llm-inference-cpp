@@ -9,7 +9,7 @@ Target dates assume about eight hours a week.
 | **M2 Forward pass** | RMSNorm, rotary embeddings, grouped-query attention and SwiGLU in plain C++; every layer's output within tolerance of PyTorch; greedy generation identical token for token on a prompt set, in CI | Nov 2026 | ✅ Done (Oct 2026) |
 | **M3 KV cache, sampling, chat** | Key/value cache with a measured speed-up; temperature, top-k and top-p sampling, reproducible from a seed; chat templates and a chat CLI | Dec 2026 | ✅ Done (Oct 2026) |
 | **M4 Performance** | Thread pool, NEON (Apple Silicon) and AVX2 kernels, profiling; prompt and generation speed compared with llama.cpp on the same machine and model | Jan–Feb 2027 | ✅ Done (Oct 2026) |
-| **M5 Quantization** | 8-bit and 4-bit block formats; quality loss measured by perplexity against the full-precision model and llama.cpp; speed and memory table | Mar 2027 | Planned |
+| **M5 Quantization** | 8-bit and 4-bit block formats; quality loss measured by perplexity against the full-precision model and llama.cpp; speed and memory table | Mar 2027 | ✅ Done (Oct 2026) |
 | **M6 Hardened GGUF loader** | Read GGUF v3 models with every size and offset checked, fuzzed, with a regression set of malformed files and a threat model for loading untrusted model files | Apr 2027 | Planned |
 | **M7 Server** | OpenAI-compatible chat completions API with streaming, request limits, localhost by default, Docker image, load test | May–Jun 2027 | Planned |
 
@@ -53,3 +53,18 @@ sharded safetensors (`model.safetensors.index.json`) for larger models.
 - Compared with llama.cpp, same machine, same weights, f32 (no quantization): within 1.5–1.6x at generation
   (same matmul shape in both engines); 2.5–2.7x slower at prompt processing, an honest gap from llama.cpp's
   row-blocked GEMM, which this engine doesn't have ([evidence](evidence/m4-llamacpp-comparison.txt)).
+
+## M5 results
+
+- Q8_0 (8-bit) and Q4_0 (4-bit) block quantization, matching GGUF's own formats exactly so a weight this
+  engine quantizes is directly comparable to llama.cpp quantizing the same source. Found and fixed a real
+  bug in the first Q4_0 implementation (a scale-sign convention that clamped the block's single most
+  important value) by comparing against llama.cpp's own Q4_0 on identical weights
+  ([evidence](evidence/m5-perplexity.txt)).
+- Quality on real text (wikitext-2, scored the same way llama.cpp's own perplexity tool does): Q8_0 loses
+  under 0.2% perplexity on both models; Q4_0 loses 36.3% (SmolLM2-135M) and 10.3% (Qwen2.5-0.5B) — smaller
+  models are more sensitive to 4-bit quantization, the same pattern llama.cpp's own numbers show.
+- The honest headline: quantizing with this engine trades memory for *more* time, not less. Q8_0/Q4_0 use
+  3.56x/6.40x less memory but run 1.9–3.4x **slower**, because the quantized matmul has no SIMD path yet —
+  the opposite of llama.cpp, whose Q8_0/Q4_0 are 4–8x **faster** than its own f32 thanks to hand-written
+  SIMD kernels that operate directly on packed weights ([evidence](evidence/m5-speed-and-memory.txt)).

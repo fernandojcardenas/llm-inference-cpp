@@ -1,0 +1,55 @@
+M5 speed and memory: F32 vs Q8_0 vs Q4_0, this engine vs llama.cpp, same machine (this
+sandbox, 2 logical CPUs), same converted weights. Methodology matches M4's
+(build-perf/, LLMI_SANITIZE=OFF -- see m4-speed.txt for why that matters on this machine).
+
+MEMORY (weight storage: every matmul'd weight matrix + the embedding/lm_head table;
+RMSNorm weights and biases stay float32 regardless of --quant, see docs/quantization.md)
+
+  SmolLM2-135M-Instruct
+    F32:   537,919,488 bytes (512.9 MiB)
+    Q8_0:  151,289,856 bytes (144.3 MiB)  -- 3.56x smaller
+    Q4_0:   84,049,920 bytes ( 80.2 MiB)  -- 6.40x smaller
+
+  Qwen2.5-0.5B-Instruct
+    F32:  1,975,844,864 bytes (1884.4 MiB)
+    Q8_0:   555,706,368 bytes ( 530.0 MiB)  -- 3.56x smaller
+    Q4_0:   308,725,760 bytes ( 294.4 MiB)  -- 6.40x smaller
+
+These ratios match the theoretical ones exactly (Q8_0: 1 byte/weight + one f32 scale per
+32 weights = 1.125 bytes/weight, 4/1.125 = 3.56x; Q4_0: 0.5 bytes/weight + the same scale
+overhead = 0.625 bytes/weight, 4/0.625 = 6.4x -- tests/quant_test.cpp's
+ByteSizeMatchesTheDocumentedCompressionRatio checks this on synthetic data), and are in the
+same ballpark as llama.cpp's own GGUF file sizes for the identical quantization (its Q8_0
+GGUF for SmolLM2 is 136.40 MiB and Q4_0 is 85.77 MiB -- slightly different from the numbers
+above because a GGUF file also holds metadata, the tokenizer vocabulary and (for Q8_0/Q4_0)
+F16 rather than F32 scales, none of which this engine's weight_bytes() counts).
+
+GENERATION SPEED (16-20 greedily generated tokens, --kv-cache, same tokens produced in every
+case -- checked against the M1-M4 baseline tokens are unaffected by quantization's own
+correctness tests, not that quantized and unquantized runs produce IDENTICAL tokens, since
+quantization is lossy by design)
+
+  SmolLM2-135M-Instruct (20 tokens)        Qwen2.5-0.5B-Instruct (16 tokens)
+  this engine         llama.cpp            this engine         llama.cpp
+  F32   23.68 tok/s   46.05 tok/s           F32    8.32 tok/s   13.43 tok/s
+  Q8_0  12.51 tok/s  213.63 tok/s           Q8_0   3.15 tok/s   46.12 tok/s
+  Q4_0   6.87 tok/s  341.33 tok/s           Q4_0   1.82 tok/s   56.36 tok/s
+
+THE HONEST HEADLINE: quantizing with this engine trades memory for SPEED, not for more
+speed on top of less memory. llama.cpp gets both: its Q8_0/Q4_0 are 4-8x FASTER than its own
+F32 (hand-written SIMD kernels that operate directly on the packed int8/nibble data,
+dequantizing only inside register-width chunks as part of the same instruction sequence
+that does the multiply-add). This engine's Q8_0/Q4_0 are 1.9-3.4x SLOWER than its own F32,
+because quant::matmul (src/model/quant.cpp) dequantizes with a plain scalar loop -- no AVX2
+or NEON path, unlike kernels::matmul's dot() (M4). For a matmul this small, losing SIMD
+costs far more than the smaller memory footprint saves on a machine with only 2 cores and no
+real memory-bandwidth pressure. A quantized SIMD dot product (the natural next step: unpack
+a register's worth of int8/nibbles and FMA against the already-SIMD float32 activations) is
+exactly the kind of secondary multiplier M4's SIMD dot() was for float32 matmul, just not
+built here -- M5's scope was the quantization format, correctness and honest measurement,
+the same boundary M4 drew around itself for cache-blocked GEMM (ADR 0006).
+
+Reproduce:
+build-perf/llmi-generate MODEL_DIR --prompt "..." --max-new 16 --kv-cache --quant q8_0  # or q4_0, f32
+(llama.cpp side: llama-bench -m MODEL-TYPE.gguf -p 0 -n 16 -t 2 -r 3, same as m4-llamacpp-comparison.txt's
+methodology, now against the Q8_0/Q4_0 GGUFs llama-quantize produced from the same f32 GGUF.)

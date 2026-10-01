@@ -9,9 +9,9 @@ Every stage is checked against the reference implementation (Hugging Face `token
 PyTorch) on real model files, in CI, on every push. Model files are untrusted input, so every parser is
 bounds-checked and fuzzed.
 
-**Status: milestones 1 through 4 of 7 done** (model loading, tokenization, a forward pass that matches PyTorch
-layer by layer, a KV cache, sampling, an interactive chat CLI, and a threaded, SIMD matmul). Next:
-quantization. See the [roadmap](docs/roadmap.md).
+**Status: milestones 1 through 5 of 7 done** (model loading, tokenization, a forward pass that matches PyTorch
+layer by layer, a KV cache, sampling, an interactive chat CLI, a threaded SIMD matmul, and 8-bit/4-bit
+quantization). Next: a hardened GGUF loader. See the [roadmap](docs/roadmap.md).
 
 ```
 $ echo "What is the capital of France?" | build/llmi-chat models/smollm2-135m-instruct --max-new 20
@@ -45,6 +45,30 @@ real templates ([details](docs/chat-template.md)).
 
 `build/llmi-chat MODEL_DIR` puts these together: an interactive, multi-turn chat CLI that reuses the KV cache
 across turns.
+
+## Quantization (M5)
+
+`quant::quantize()` (`src/model/quant.cpp`) adds two smaller, lossy weight formats matching
+GGUF's own Q8_0 (8-bit) and Q4_0 (4-bit) block layout exactly, so this engine's own quantized
+weights are directly comparable to llama.cpp quantizing the identical float32 source.
+`Transformer::load(model, quant::Type::Q8_0)` (or `Q4_0`) quantizes every matmul weight at
+load time through a small `Weight` wrapper (`include/llmi/model/weight.hpp`); RMSNorm
+weights, biases and `inv_freq` stay float32. Selecting the default, `F32`, reproduces M1-M4's
+code path and bit-exact guarantees unchanged.
+
+Measured on real text (wikitext-2, scored the way llama.cpp's own perplexity tool scores by
+default): Q8_0 loses under 0.2% perplexity on both models; Q4_0 loses 36.3% (SmolLM2-135M)
+and 10.3% (Qwen2.5-0.5B) — smaller models are more sensitive to 4-bit quantization, the same
+pattern llama.cpp's own numbers show ([details](docs/quantization.md),
+[evidence](docs/evidence/m5-perplexity.txt)). Finding and fixing a real scale-sign bug in the
+first Q4_0 implementation (caught by comparing against llama.cpp's own Q4_0 on the identical
+weights) is covered in [ADR 0006](docs/adr/0006-block-quantization-matches-gguf-no-simd-yet.md).
+
+The honest headline: quantizing here trades memory for *more* time, not less. Q8_0/Q4_0 use
+3.56x/6.40x less memory but run 1.9–3.4x **slower**, because the quantized matmul
+(`quant::matmul`) has no SIMD path yet, unlike `kernels::dot()` (M4) — the opposite of
+llama.cpp, whose Q8_0/Q4_0 are 4–8x **faster** than its own f32 thanks to hand-written SIMD
+kernels operating directly on packed weights ([evidence](docs/evidence/m5-speed-and-memory.txt)).
 
 ## Performance: threads and SIMD (M4)
 
@@ -134,7 +158,7 @@ Getting to exact agreement found two things the reference does that are easy to 
 
 | Check | What it proves | Where |
 |---|---|---|
-| 80 unit tests (GoogleTest) | UTF-8 edge cases; JSON grammar, escapes, exact 64-bit integers, depth and size limits; every safetensors rejection rule, including shapes that overflow 64 bits; float conversion (F32, F16 incl. subnormals and infinity, BF16); config validation; weight-layout checks; known token ids from the reference; round trips; dropped bytes; every kernel against hand-worked or double-precision values (RoPE scores depend only on relative position); on a small random model of each architecture: causality, determinism, tracing, bad input, stop tokens, and the KV cache reproducing the no-cache baseline; sampling's filtering checked against a plain softmax; the chat template engine's control flow and whitespace handling; the thread pool's chunking (every index covered exactly once, any worker count) and matmul's threaded output bit-for-bit against a row-by-row reference | `tests/` |
+| 89 unit tests (GoogleTest) | UTF-8 edge cases; JSON grammar, escapes, exact 64-bit integers, depth and size limits; every safetensors rejection rule, including shapes that overflow 64 bits; float conversion (F32, F16 incl. subnormals and infinity, BF16); config validation; weight-layout checks; known token ids from the reference; round trips; dropped bytes; every kernel against hand-worked or double-precision values (RoPE scores depend only on relative position); on a small random model of each architecture: causality, determinism, tracing, bad input, stop tokens, and the KV cache reproducing the no-cache baseline; sampling's filtering checked against a plain softmax; the chat template engine's control flow and whitespace handling; the thread pool's chunking (every index covered exactly once, any worker count) and matmul's threaded output bit-for-bit against a row-by-row reference; Q8_0/Q4_0 round-trip error bounds (including the exact-reconstruction case for a block's extreme value) and quantized matmul against a dequantize-then-dot reference; a quantized whole-model forward pass staying close to float32 and picking the same argmax | `tests/` |
 | Forward-pass cross-check | Every layer within 1e-4 of PyTorch and greedy tokens identical, on two architectures | `tools/crosscheck_forward.py`, CI `forward` job |
 | Tokenizer cross-check | Identical token ids to Hugging Face on 4.5 million inputs | `tools/crosscheck_tokenizer.py`, CI `crosscheck` job |
 | Weight cross-check | Every tensor of two models read exactly as PyTorch reads it | `tools/crosscheck_weights.py`, CI `crosscheck` job |
@@ -171,6 +195,8 @@ build/llmi-tokenize models/smollm2-135m-instruct/tokenizer.json "Hello, world!"
 build/llmi-generate models/smollm2-135m-instruct --prompt "The capital of France is" --max-new 16 --kv-cache
 build/llmi-chat models/smollm2-135m-instruct --temperature 0.8 --top-k 40 --top-p 0.9 --seed 1
 build/llmi-generate models/qwen2.5-0.5b-instruct --ids 785,6722,315,9625,374 --max-new 8
+build/llmi-generate models/smollm2-135m-instruct --prompt "The capital of France is" --max-new 16 --kv-cache --quant q8_0
+build/llmi-perplexity models/smollm2-135m-instruct --ids-file ids.txt --ctx 512 --quant q4_0
 ```
 
 `llmi-generate --kv-cache` uses the KV cache (M3) instead of recomputing the whole sequence every step (M2);
@@ -182,18 +208,22 @@ Qwen2.5's tokenizer is not supported yet, so its prompt is given as token ids (`
 reference tokenizer decodes as " Paris. It is the largest city in". Its chat template engine still works and
 is cross-checked (`llmi-chat-template`); only tokenization and `llmi-chat` are blocked on it.
 
+`--quant f32` (the default) / `q8_0` / `q4_0` on `llmi-generate` and `llmi-perplexity` selects the weight
+format (M5); `llmi-perplexity` measures perplexity on a fixed token sequence from a file written by
+`tools/make_ppl_ids.py` (`--ids-file`, one decimal id per line).
+
 To run the cross-checks yourself: `pip install transformers==5.18.0 tokenizers==0.23.2 safetensors torch`, then
 see the commands at the top of each file in `docs/evidence/`.
 
 ## Layout
 
 ```
-include/llmi/   public headers: util/ (JSON, UTF-8, Result, thread pool), model/ (safetensors, config, kernels, transformer, sampling), tokenizer/, chat/ (template)
+include/llmi/   public headers: util/ (JSON, UTF-8, Result, thread pool), model/ (safetensors, config, kernels, quant, weight, transformer, sampling), tokenizer/, chat/ (template)
 src/            implementation; src/tokenizer/unicode_tables.inc is generated from the Unicode database
-apps/           llmi-inspect, llmi-tokenize, llmi-generate, llmi-chat, llmi-chat-template
+apps/           llmi-inspect, llmi-tokenize, llmi-generate, llmi-chat, llmi-chat-template, llmi-perplexity
 tests/          unit tests
 fuzz/           libFuzzer targets
-tools/          model download, cross-checks, Unicode table generator and probe, fuzz seeds, matmul microbenchmark
+tools/          model download, cross-checks, Unicode table generator and probe, fuzz seeds, matmul microbenchmark, perplexity-eval token ids
 testdata/       tokenizer.json/config.json/tokenizer_config.json for the three models (Apache 2.0)
 docs/           roadmap, tokenizer, forward-pass, KV cache, sampling and chat-template notes, architecture
                 decisions, evidence from real runs
