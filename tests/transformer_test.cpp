@@ -42,6 +42,35 @@ TEST(Kernels, MatmulWithBias) {
   EXPECT_FLOAT_EQ(y[0], -2.0F);
 }
 
+TEST(Kernels, MatmulAboveTheThreadingThresholdMatchesARowByRowReference) {
+  // Large enough (rows * in * out) that matmul's internal thread-pool
+  // dispatch actually splits the `out` range across more than one chunk
+  // (M4) -- a plain two-row, two-output test like MatmulWithBias above never
+  // exercises that code path. The reference recomputes every element with
+  // kernels::dot one output column at a time, serially, so this is really a
+  // test of the o_begin/o_end chunk boundaries in kernels::matmul, not of
+  // dot() itself (already covered by DotMatchesDoublePrecision above).
+  constexpr std::size_t rows = 3;
+  constexpr std::size_t in = 300;
+  constexpr std::size_t out = 4000;
+  std::mt19937 rng(7);
+  std::uniform_real_distribution<float> u(-1, 1);
+  std::vector<float> x(rows * in), w(out * in), bias(out);
+  for (auto& v : x) v = u(rng);
+  for (auto& v : w) v = u(rng);
+  for (auto& v : bias) v = u(rng);
+
+  std::vector<float> y(rows * out);
+  kernels::matmul(x.data(), rows, in, w.data(), out, bias.data(), y.data());
+
+  for (std::size_t o = 0; o < out; ++o) {
+    for (std::size_t r = 0; r < rows; ++r) {
+      const float want = kernels::dot(x.data() + r * in, w.data() + o * in, in) + bias[o];
+      ASSERT_FLOAT_EQ(y[r * out + o], want) << "r=" << r << " o=" << o;
+    }
+  }
+}
+
 TEST(Kernels, RmsNorm) {
   const float x[] = {3, 4};
   const float w[] = {1, 2};

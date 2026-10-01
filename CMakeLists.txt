@@ -10,6 +10,17 @@ option(LLMI_BUILD_TESTS "Build unit tests" ON)
 option(LLMI_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 option(LLMI_BUILD_FUZZERS "Build libFuzzer targets (requires Clang)" OFF)
 option(LLMI_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+option(LLMI_ENABLE_SIMD "Compile kernels::dot with AVX2+FMA (x86_64) or NEON (arm64)" ON)
+
+# On arm64 (Apple Silicon included), NEON is simply part of the base ISA --
+# no flag needed, and src/model/kernels.cpp enables its NEON path whenever
+# __ARM_NEON is predefined. On x86_64, AVX2+FMA are not assumed by a plain
+# -std=c++20 build, so this is the only place that turns them on; a CPU
+# without them needs LLMI_ENABLE_SIMD=OFF (kernels.cpp falls back to the
+# portable scalar dot product either way if the macros aren't defined).
+if(LLMI_ENABLE_SIMD AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+  add_compile_options(-mavx2 -mfma)
+endif()
 
 add_library(llmi_warnings INTERFACE)
 target_compile_options(llmi_warnings INTERFACE
@@ -30,6 +41,7 @@ endif()
 add_library(llmi
   src/util/utf8.cpp
   src/util/json.cpp
+  src/util/thread_pool.cpp
   src/model/safetensors.cpp
   src/model/model.cpp
   src/model/kernels.cpp
@@ -38,7 +50,8 @@ add_library(llmi
   src/chat/template.cpp
   src/tokenizer/tokenizer.cpp)
 target_include_directories(llmi PUBLIC include PRIVATE src/tokenizer)
-target_link_libraries(llmi PRIVATE llmi_warnings)
+find_package(Threads REQUIRED)
+target_link_libraries(llmi PRIVATE llmi_warnings PUBLIC Threads::Threads)
 
 add_executable(llmi-inspect apps/llmi-inspect/main.cpp)
 target_link_libraries(llmi-inspect PRIVATE llmi llmi_warnings)
@@ -71,7 +84,8 @@ if(LLMI_BUILD_TESTS)
     tests/tokenizer_test.cpp
     tests/transformer_test.cpp
     tests/sampling_test.cpp
-    tests/chat_template_test.cpp)
+    tests/chat_template_test.cpp
+    tests/thread_pool_test.cpp)
   target_compile_definitions(llmi_tests PRIVATE LLMI_TESTDATA_DIR="${LLMI_TESTDATA_DIR}")
   target_link_libraries(llmi_tests PRIVATE llmi llmi_warnings GTest::gtest_main)
   include(GoogleTest)
