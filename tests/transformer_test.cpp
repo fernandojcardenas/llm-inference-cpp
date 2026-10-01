@@ -220,6 +220,99 @@ TEST(Transformer, RejectsBadInput) {
   EXPECT_FALSE(tf->forward(std::vector<TokenId>(65, 1)));  // longer than the context
 }
 
+// --------------------------------------------------------------- KV cache
+
+TEST(KVCache, PrefillInOneCallMatchesForward) {
+  // A single forward_cached() call over the whole sequence (prefill, no
+  // decode steps yet) must give exactly the same logits as forward().
+  for (const char* arch : {"LlamaForCausalLM", "Qwen2ForCausalLM"}) {
+    auto tiny = make_tiny(arch, false, 10);
+    auto tf = Transformer::load(tiny.model);
+    ASSERT_TRUE(tf);
+    const std::vector<TokenId> ids = {5, 9, 1, 30, 7};
+    auto baseline = tf->forward(ids, true);
+    auto cache = tf->new_cache(ids.size());
+    ASSERT_TRUE(cache);
+    auto cached = tf->forward_cached(ids, *cache, true);
+    ASSERT_TRUE(baseline && cached) << arch;
+    ASSERT_EQ(baseline->size(), cached->size()) << arch;
+    for (std::size_t i = 0; i < baseline->size(); ++i) EXPECT_EQ((*baseline)[i], (*cached)[i]) << arch << " index " << i;
+    EXPECT_EQ(cache->length(), ids.size());
+  }
+}
+
+TEST(KVCache, OneTokenAtATimeMatchesForward) {
+  // Feeding the cache one new token per call (as real decoding does) must
+  // match forward() recomputing the whole growing sequence every time.
+  for (const char* arch : {"LlamaForCausalLM", "Qwen2ForCausalLM"}) {
+    auto tiny = make_tiny(arch, true, 11);
+    auto tf = Transformer::load(tiny.model);
+    ASSERT_TRUE(tf);
+    const std::vector<TokenId> ids = {2, 17, 4, 9, 21, 0, 13};
+    auto cache = tf->new_cache(ids.size());
+    ASSERT_TRUE(cache);
+    for (std::size_t t = 0; t < ids.size(); ++t) {
+      auto baseline = tf->forward(std::vector<TokenId>(ids.begin(), ids.begin() + static_cast<long>(t) + 1));
+      auto cached = tf->forward_cached({ids[t]}, *cache);
+      ASSERT_TRUE(baseline && cached) << arch << " step " << t;
+      ASSERT_EQ(baseline->size(), cached->size());
+      for (std::size_t i = 0; i < baseline->size(); ++i) EXPECT_EQ((*baseline)[i], (*cached)[i]) << arch << " step " << t << " index " << i;
+    }
+    EXPECT_EQ(cache->length(), ids.size());
+  }
+}
+
+TEST(KVCache, PrefillThenStepsMatchesForward) {
+  // The realistic pattern: prefill a multi-token prompt, then decode one
+  // token at a time.
+  auto tiny = make_tiny("Qwen2ForCausalLM", false, 12);
+  auto tf = Transformer::load(tiny.model);
+  ASSERT_TRUE(tf);
+  const std::vector<TokenId> prompt = {3, 8, 14};
+  const std::vector<TokenId> steps = {6, 19, 2};
+  auto cache = tf->new_cache(prompt.size() + steps.size());
+  ASSERT_TRUE(cache);
+  ASSERT_TRUE(tf->forward_cached(prompt, *cache));
+  std::vector<TokenId> grown = prompt;
+  for (const TokenId next : steps) {
+    grown.push_back(next);
+    auto baseline = tf->forward(grown);
+    auto cached = tf->forward_cached({next}, *cache);
+    ASSERT_TRUE(baseline && cached);
+    for (std::size_t i = 0; i < baseline->size(); ++i) EXPECT_EQ((*baseline)[i], (*cached)[i]);
+  }
+}
+
+TEST(KVCache, GenerateGreedyCachedMatchesGenerateGreedy) {
+  for (const char* arch : {"LlamaForCausalLM", "Qwen2ForCausalLM"}) {
+    auto tiny = make_tiny(arch, true, 13);
+    auto tf = Transformer::load(tiny.model);
+    ASSERT_TRUE(tf);
+    auto plain = tf->generate_greedy({1, 2, 3}, 12, {});
+    auto cached = tf->generate_greedy_cached({1, 2, 3}, 12, {});
+    ASSERT_TRUE(plain && cached) << arch;
+    EXPECT_EQ(plain.value(), cached.value()) << arch;
+    // Stopping behaves the same way with a cache.
+    auto plain_stop = tf->generate_greedy({1, 2, 3}, 12, {(*plain)[2]});
+    auto cached_stop = tf->generate_greedy_cached({1, 2, 3}, 12, {(*plain)[2]});
+    ASSERT_TRUE(plain_stop && cached_stop) << arch;
+    EXPECT_EQ(plain_stop.value(), cached_stop.value()) << arch;
+  }
+}
+
+TEST(KVCache, RejectsOverfullOrUnknownCache) {
+  auto tiny = make_tiny("LlamaForCausalLM", true, 14);
+  auto tf = Transformer::load(tiny.model);
+  ASSERT_TRUE(tf);
+  auto cache = tf->new_cache(3);
+  ASSERT_TRUE(cache);
+  ASSERT_TRUE(tf->forward_cached({1, 2, 3}, *cache));
+  EXPECT_FALSE(tf->forward_cached({4}, *cache));  // cache is full
+  cache->reset();
+  EXPECT_TRUE(tf->forward_cached({1, 2, 3}, *cache));  // reset makes room again
+  EXPECT_FALSE(tf->new_cache(0));
+}
+
 TEST(Transformer, GreedyIsDeterministicAndStops) {
   auto tiny = make_tiny("LlamaForCausalLM", true, 7);
   auto tf = Transformer::load(tiny.model);

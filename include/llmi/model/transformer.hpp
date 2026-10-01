@@ -16,6 +16,28 @@ struct ForwardTrace {
   std::vector<std::vector<float>> states;
 };
 
+// Per-layer key/value history for incremental decoding. Position `length`
+// (0-based) is the next slot forward_cached() will fill; everything before
+// it was computed by an earlier call and is reused, not recomputed.
+//
+// A cache only ever grows by appending, so its contents at any point are
+// exactly the K/V that Transformer::forward() would have computed for the
+// same token sequence from scratch: forward_cached() must reproduce
+// forward()'s baseline token for token (ADR 0004).
+class KVCache {
+ public:
+  [[nodiscard]] std::size_t length() const { return length_; }
+  [[nodiscard]] std::size_t capacity() const { return capacity_; }
+  void reset() { length_ = 0; }
+
+ private:
+  friend class Transformer;
+  std::size_t capacity_ = 0;
+  std::size_t length_ = 0;
+  // k_[layer] / v_[layer]: capacity_ * num_kv_heads * head_dim, row-major by position.
+  std::vector<std::vector<float>> k_, v_;
+};
+
 // A decoder-only transformer (Llama / Qwen2) in float32.
 //
 //   x = embed[token]
@@ -23,7 +45,10 @@ struct ForwardTrace {
 //               x += Wdown * (silu(Wgate*rmsnorm(x)) * (Wup*rmsnorm(x)))
 //   logits = lm_head * rmsnorm(x)
 //
-// M2 recomputes the whole sequence on every call; the key/value cache is M3.
+// forward() recomputes the whole sequence every call (M2's baseline, kept for
+// cross-checking and for --dump). forward_cached() keeps past keys/values in
+// a KVCache and only computes the new tokens (M3): the KV cache test suite
+// (transformer_test.cpp) checks it reproduces forward() exactly.
 class Transformer {
  public:
   // Converts every weight to float32 (BF16 and F16 convert exactly).
@@ -40,6 +65,25 @@ class Transformer {
   // on ties), stopping early at a stop token unless stop_ids is empty.
   [[nodiscard]] Result<std::vector<TokenId>> generate_greedy(std::vector<TokenId> tokens, std::size_t max_new,
                                                              const std::vector<TokenId>& stop_ids) const;
+
+  // A cache sized to hold up to max_len positions (capped at the model's
+  // context length).
+  [[nodiscard]] Result<KVCache> new_cache(std::size_t max_len) const;
+
+  // Processes only `tokens` (new positions, continuing where the cache left
+  // off), appends their keys/values to cache, and returns logits for the
+  // last new position (or every new position when all_positions is set).
+  // tokens.size() can be 1 (one decode step) or more (prefilling a prompt).
+  [[nodiscard]] Result<std::vector<float>> forward_cached(const std::vector<TokenId>& tokens, KVCache& cache,
+                                                          bool all_positions = false,
+                                                          ForwardTrace* trace = nullptr) const;
+
+  // Greedy decoding using a KV cache: the prompt is prefilled once, then each
+  // step computes only the one new token. Produces the same tokens as
+  // generate_greedy on the same input.
+  [[nodiscard]] Result<std::vector<TokenId>> generate_greedy_cached(const std::vector<TokenId>& prompt,
+                                                                    std::size_t max_new,
+                                                                    const std::vector<TokenId>& stop_ids) const;
 
  private:
   struct Layer {

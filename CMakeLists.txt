@@ -34,6 +34,8 @@ add_library(llmi
   src/model/model.cpp
   src/model/kernels.cpp
   src/model/transformer.cpp
+  src/model/sampling.cpp
+  src/chat/template.cpp
   src/tokenizer/tokenizer.cpp)
 target_include_directories(llmi PUBLIC include PRIVATE src/tokenizer)
 target_link_libraries(llmi PRIVATE llmi_warnings)
@@ -44,6 +46,10 @@ add_executable(llmi-tokenize apps/llmi-tokenize/main.cpp)
 target_link_libraries(llmi-tokenize PRIVATE llmi llmi_warnings)
 add_executable(llmi-generate apps/llmi-generate/main.cpp)
 target_link_libraries(llmi-generate PRIVATE llmi llmi_warnings)
+add_executable(llmi-chat-template apps/llmi-chat-template/main.cpp)
+target_link_libraries(llmi-chat-template PRIVATE llmi llmi_warnings)
+add_executable(llmi-chat apps/llmi-chat/main.cpp)
+target_link_libraries(llmi-chat PRIVATE llmi llmi_warnings)
 
 set(LLMI_TESTDATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/testdata")
 
@@ -63,7 +69,9 @@ if(LLMI_BUILD_TESTS)
     tests/safetensors_test.cpp
     tests/model_test.cpp
     tests/tokenizer_test.cpp
-    tests/transformer_test.cpp)
+    tests/transformer_test.cpp
+    tests/sampling_test.cpp
+    tests/chat_template_test.cpp)
   target_compile_definitions(llmi_tests PRIVATE LLMI_TESTDATA_DIR="${LLMI_TESTDATA_DIR}")
   target_link_libraries(llmi_tests PRIVATE llmi llmi_warnings GTest::gtest_main)
   include(GoogleTest)

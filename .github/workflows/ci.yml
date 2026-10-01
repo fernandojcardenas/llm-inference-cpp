@@ -67,7 +67,7 @@ jobs:
           python-version: "3.12"
       - name: Install the reference implementations
         run: |
-          pip install tokenizers==0.23.2 safetensors==0.8.0 numpy==2.5.3
+          pip install transformers==5.18.0 tokenizers==0.23.2 safetensors==0.8.0 numpy==2.5.3
           pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu
       - name: Build the tools
         run: |
@@ -101,6 +101,16 @@ jobs:
             echo >> "$GITHUB_STEP_SUMMARY"
           done
           echo '```' >> "$GITHUB_STEP_SUMMARY"
+      - name: Chat template — identical to Hugging Face's own Jinja compiler
+        run: |
+          set -o pipefail
+          echo '### Chat template cross-check' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          for m in testdata/smollm2-135m-instruct testdata/qwen2.5-0.5b-instruct; do
+            echo "-- $m --" | tee -a "$GITHUB_STEP_SUMMARY"
+            python3 tools/crosscheck_chat_template.py $m build/llmi-chat-template | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   forward:
     name: Forward pass and greedy generation vs PyTorch
@@ -127,8 +137,11 @@ jobs:
           tools/fetch_model.sh smollm2-135m models/smollm2-135m
           tools/fetch_model.sh qwen2.5-0.5b-instruct models/qwen2.5-0.5b-instruct
       # Every layer within 1e-4 relative of PyTorch, and greedy tokens identical.
-      # Qwen generates fewer tokens: without a KV cache (M3) each step recomputes
-      # the whole sequence, single-threaded.
+      # Deliberately exercises the no-cache baseline (M2), not --kv-cache (M3):
+      # this is what the KV cache is checked against (tests/transformer_test.cpp
+      # KVCache.* and ADR 0004), so it must keep working unchanged. Qwen
+      # generates fewer tokens here since each step recomputes the whole
+      # sequence, single-threaded.
       - name: SmolLM2-135M, 8 prompts, 24 greedy tokens each
         run: |
           set -o pipefail

@@ -3,12 +3,16 @@
 //   llmi-generate MODEL_DIR --prompt "The capital of France is" [--max-new 32]
 //   llmi-generate MODEL_DIR --ids 504,3575,282 --max-new 16 --ignore-eos --json
 //   llmi-generate MODEL_DIR --ids 504,3575,282 --dump trace.bin
+//   llmi-generate MODEL_DIR --prompt "..." --max-new 32 --kv-cache
 //
 // --prompt needs a tokenizer.json the engine supports (SmolLM2's); --ids
 // works with any supported model. --json prints the token ids and timing as
 // one JSON object. --dump runs one forward pass over the prompt and writes
 // every intermediate state and all logits (format: a JSON header line, then
-// float32 little-endian arrays) for tools/crosscheck_forward.py.
+// float32 little-endian arrays) for tools/crosscheck_forward.py. --kv-cache
+// uses generate_greedy_cached (M3) instead of generate_greedy's no-cache
+// baseline (M2); both must produce the same tokens (tests/transformer_test.cpp),
+// so this flag only changes speed, used to measure M3's speed-up.
 
 #include <chrono>
 #include <cstdio>
@@ -75,6 +79,7 @@ int run(int argc, char** argv) {
   std::size_t max_new = 32;
   bool ignore_eos = false;
   bool as_json = false;
+  bool use_kv_cache = false;
   for (int i = 2; i < argc; ++i) {
     const std::string a = argv[i];
     const bool has_value = i + 1 < argc;
@@ -93,6 +98,8 @@ int run(int argc, char** argv) {
       ignore_eos = true;
     } else if (a == "--json") {
       as_json = true;
+    } else if (a == "--kv-cache") {
+      use_kv_cache = true;
     } else {
       std::fprintf(stderr, "error: unknown or incomplete argument %s\n", a.c_str());
       return 2;
@@ -150,7 +157,8 @@ int run(int argc, char** argv) {
 
   const auto t_gen = Clock::now();
   const std::vector<llmi::TokenId> none;
-  auto out = tf->generate_greedy(ids, max_new, ignore_eos ? none : tf->config().eos_token_ids);
+  const auto& stop_ids = ignore_eos ? none : tf->config().eos_token_ids;
+  auto out = use_kv_cache ? tf->generate_greedy_cached(ids, max_new, stop_ids) : tf->generate_greedy(ids, max_new, stop_ids);
   if (!out) {
     std::fprintf(stderr, "error: %s\n", out.error().c_str());
     return 1;
@@ -168,8 +176,9 @@ int run(int argc, char** argv) {
   } else {
     std::printf("generated ids: %s\n", join(out.value()).c_str());
   }
-  std::printf("[%zu prompt tokens, %zu generated in %.2f s (%.2f tokens/s, no KV cache yet); load %.2f s]\n", ids.size(),
-              out->size(), gen_s, static_cast<double>(out->size()) / gen_s, load_s);
+  std::printf("[%zu prompt tokens, %zu generated in %.2f s (%.2f tokens/s, %s); load %.2f s]\n", ids.size(),
+              out->size(), gen_s, static_cast<double>(out->size()) / gen_s, use_kv_cache ? "KV cache" : "no KV cache",
+              load_s);
   return 0;
 }
 

@@ -7,7 +7,7 @@
 set -euo pipefail
 
 if [[ $# -ne 2 ]]; then
-  echo "usage: $0 MODEL DEST_DIR   (models: smollm2-135m, qwen2.5-0.5b-instruct)" >&2
+  echo "usage: $0 MODEL DEST_DIR   (models: smollm2-135m, smollm2-135m-instruct, qwen2.5-0.5b-instruct)" >&2
   exit 2
 fi
 model=$1
@@ -22,6 +22,15 @@ case $model in
       "tokenizer.json 9ca9acddb6525a194ec8ac7a87f24fbba7232a9a15ffa1af0c1224fcd888e47c"
       "model.safetensors 80521b40281d6ce74e35c9282c22539e75aa0ac8578892b2a59955ef78d55da1"
     ) ;;
+  smollm2-135m-instruct)  # Apache 2.0; same tokenizer.json as the base model, plus a chat_template
+    repo=HuggingFaceTB/SmolLM2-135M-Instruct
+    revision=12fd25f77366fa6b3b4b768ec3050bf629380bac
+    files=(
+      "config.json 8eb740e8bbe4cff95ea7b4588d17a2432deb16e8075bc5828ff7ba9be94d982a"
+      "tokenizer.json 9ca9acddb6525a194ec8ac7a87f24fbba7232a9a15ffa1af0c1224fcd888e47c"
+      "model.safetensors 5af571cbf074e6d21a03528d2330792e532ca608f24ac70a143f6b369968ab8c"
+      "tokenizer_config.json 4ec77d44f62efeb38d7e044a1db318f6a939438425312dfa333b8382dbad98df"
+    ) ;;
   qwen2.5-0.5b-instruct)  # Apache 2.0
     repo=Qwen/Qwen2.5-0.5B-Instruct
     revision=7ae557604adf67be50417f59c2c2f167def9a775
@@ -29,6 +38,7 @@ case $model in
       "config.json 18e18afcaccafade98daf13a54092927904649e1dd4eba8299ab717d5d94ff45"
       "tokenizer.json c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539"
       "model.safetensors fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe"
+      "tokenizer_config.json 5b5d4f65d0acd3b2d56a35b56d374a36cbc1c8fa5cf3b3febbbfabf22f359583"
     ) ;;
   *)
     echo "unknown model: $model" >&2
