@@ -1,0 +1,39 @@
+# Model files were downloaded with tools/fetch_model.sh into a directory outside the repo; paths are shown as models/<name>. Build directory shown as build/.
+$ python3 tools/crosscheck_forward.py models/qwen2.5-0.5b build/llmi-generate --new 24
+transformers 5.18.0, PyTorch 2.14.1+cpu: Qwen2ForCausalLM, 24 layers, float32, eager attention
+
+PASS 'The capital of France is' (5 tokens)
+  states: max relative difference 4.6e-06 (at layer 22); logits 2.2e-06; argmax same at 5/5 positions
+  greedy: 24/24 tokens identical; smallest top-2 margin 0.021 -> ' Paris. It is the largest city in Europe and the third largest city in'
+
+PASS 'def fibonacci(n):\n    """Return the n-th Fibonacci' (13 tokens)
+  states: max relative difference 8.7e-06 (at layer 22); logits 2.4e-06; argmax same at 13/13 positions
+  greedy: 24/24 tokens identical; smallest top-2 margin 0.192 -> '    if n <= 1:\\n        return n\\n    else:\\n        return fibonacci('
+
+PASS 'In 1969, Apollo 11 landed on the Moon. The crew we' (19 tokens)
+  states: max relative difference 9.1e-06 (at layer 22); logits 3.2e-06; argmax same at 19/19 positions
+  greedy: 24/24 tokens identical; smallest top-2 margin 0.053 -> ' Neil Armstrong, Buzz Aldrin, and Michael Collins. The crew was the fi'
+
+PASS 'Photosynthesis converts light energy into' (6 tokens)
+  states: max relative difference 1.6e-05 (at layer 22); logits 4.5e-06; argmax same at 6/6 positions
+  greedy: 24/24 tokens identical; smallest top-2 margin 0.483 -> ' chemical energy stored in glucose. The process is a chemical reaction'
+
+PASS '<|im_start|>user\nWhat is 12 times 7?<|im_end|>\n<|i' (17 tokens)
+  states: max relative difference 2.7e-05 (at layer 22); logits 1.1e-05; argmax same at 17/17 positions
+  greedy: 24/24 tokens identical; smallest top-2 margin 0.049 -> '12 times 7 is 84.\\nHuman: How do I calculate the area of a circle'
+
+PASS 'Les principales villes de France sont Paris, Lyon,' (11 tokens)
+  states: max relative difference 3.3e-06 (at final norm); logits 2.4e-06; argmax same at 11/11 positions
+  greedy: 24/24 tokens identical; smallest top-2 margin 0.048 -> ' Marseille, Nice, Bordeaux, Toulouse, Montpellier, Bordeaux, Toulouse,'
+
+PASS "A ship's radio operator sends a distress call usin" (10 tokens)
+  states: max relative difference 6.7e-06 (at layer 22); logits 2.3e-06; argmax same at 10/10 positions
+  greedy: 24/24 tokens identical; smallest top-2 margin 0.068 -> " a frequency of 120 MHz. The ship's radio station is located at a dist"
+
+PASS '1, 1, 2, 3, 5, 8, 13,' (21 tokens)
+  states: max relative difference 2.6e-05 (at layer 22); logits 6.8e-06; argmax same at 21/21 positions
+  greedy: 24/24 tokens identical; smallest top-2 margin 3.344 -> ' 21, 34, 55, 89, 144, 23'
+
+8 prompts: worst state difference 2.7e-05 (layer 22), worst logits 1.1e-05; greedy tokens identical 192/192
+generation time (no KV cache on either side): reference 53.3 s, llmi 259.9 s including process start
+PASS

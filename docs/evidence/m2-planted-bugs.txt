@@ -1,0 +1,45 @@
+# Each bug planted alone in a scratch copy of src/model/{kernels,transformer}.cpp (tools-only build), then:
+# $ python3 tools/crosscheck_forward.py models/smollm2-135m build/llmi-generate --new 8 --limit 2
+# Lines shown: per-prompt verdict, state/logit differences, greedy agreement, divergence point (filtered with grep).
+#   rope-interleaved: RoPE pairs (2i, 2i+1) instead of (i, i + d/2)
+#   gqa-head-mapping: query head h reads key/value head h % kv_heads instead of h / (heads / kv_heads)
+#   causal-mask-leak: position t also attends to position t + 1
+#   rope-theta:       RoPE base 10,000 instead of the model's 100,000
+
+== rope-interleaved
+FAIL 'The capital of France is' (5 tokens)
+  states: max relative difference 1.9e-01 (at final norm); logits 2.0e-01; argmax same at 4/5 positions
+  greedy: 3/8 tokens identical; smallest top-2 margin 0.052 -> ' the capital of the country.\\n\\n'
+  diverged at step 3: reference margin there 0.7772; reference [260, 1798, 30, 198], llmi [4649, 30, 378, 3575]
+FAIL 'def fibonacci(n):\n    """Return the n-th Fibonacci' (18 tokens)
+  states: max relative difference 5.9e-01 (at layer 10); logits 4.5e-01; argmax same at 14/18 positions
+  greedy: 0/8 tokens identical; smallest top-2 margin 0.209 -> '\\ndef fibonacci(n):\\n   '
+  diverged at step 0: reference margin there 0.3495; reference [198, 1604, 3987, 46477], llmi [1604, 3987, 46477, 24]
+FAIL
+== gqa-head-mapping
+FAIL 'The capital of France is' (5 tokens)
+  states: max relative difference 9.9e+00 (at layer 30); logits 1.2e+00; argmax same at 0/5 positions
+  greedy: 0/8 tokens identical; smallest top-2 margin 0.052 -> ' the capital of the country.\\n\\n'
+  diverged at step 0: reference margin there 1.0255; reference [260, 3575, 282, 260], llmi [826, 28, 17626, 4037]
+FAIL 'def fibonacci(n):\n    """Return the n-th Fibonacci' (18 tokens)
+  states: max relative difference 1.7e+01 (at layer 30); logits 1.1e+00; argmax same at 0/18 positions
+  greedy: 0/8 tokens identical; smallest top-2 margin 0.209 -> '\\ndef fibonacci(n):\\n   '
+  diverged at step 0: reference margin there 0.3495; reference [198, 1604, 3987, 46477], llmi [38734, 117, 38734, 3319]
+FAIL
+== causal-mask-leak
+FAIL 'The capital of France is' (5 tokens)
+  states: max relative difference 2.7e+00 (at layer 30); logits 9.3e-01; argmax same at 3/5 positions
+  greedy: 8/8 tokens identical; smallest top-2 margin 0.052 -> ' the capital of the country.\\n\\n'
+FAIL 'def fibonacci(n):\n    """Return the n-th Fibonacci' (18 tokens)
+  states: max relative difference 1.4e+01 (at layer 30); logits 1.1e+00; argmax same at 7/18 positions
+  greedy: 8/8 tokens identical; smallest top-2 margin 0.209 -> '\\ndef fibonacci(n):\\n   '
+FAIL
+== rope-theta
+FAIL 'The capital of France is' (5 tokens)
+  states: max relative difference 2.3e-02 (at final norm); logits 3.2e-02; argmax same at 5/5 positions
+  greedy: 3/8 tokens identical; smallest top-2 margin 0.052 -> ' the capital of the country.\\n\\n'
+  diverged at step 3: reference margin there 0.7772; reference [260, 1798, 30, 198], llmi [4649, 30, 198, 198]
+FAIL 'def fibonacci(n):\n    """Return the n-th Fibonacci' (18 tokens)
+  states: max relative difference 9.2e-02 (at layer 11); logits 6.6e-02; argmax same at 17/18 positions
+  greedy: 8/8 tokens identical; smallest top-2 margin 0.209 -> '\\ndef fibonacci(n):\\n   '
+FAIL

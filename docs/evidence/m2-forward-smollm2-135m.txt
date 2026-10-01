@@ -1,0 +1,39 @@
+# Model files were downloaded with tools/fetch_model.sh into a directory outside the repo; paths are shown as models/<name>. Build directory shown as build/.
+$ python3 tools/crosscheck_forward.py models/smollm2-135m build/llmi-generate --new 24
+transformers 5.18.0, PyTorch 2.14.1+cpu: LlamaForCausalLM, 30 layers, float32, eager attention
+
+PASS 'The capital of France is' (5 tokens)
+  states: max relative difference 3.5e-06 (at final norm); logits 3.4e-06; argmax same at 5/5 positions
+  greedy: 24/24 tokens identical; smallest top-2 margin 0.052 -> ' the capital of the country.\\n\\nThe capital of France is the capital o'
+
+PASS 'def fibonacci(n):\n    """Return the n-th Fibonacci' (18 tokens)
+  states: max relative difference 2.3e-06 (at layer 10); logits 4.5e-06; argmax same at 18/18 positions
+  greedy: 24/24 tokens identical; smallest top-2 margin 0.072 -> '\\ndef fibonacci(n):\\n    """Return the n-th Fibonacci number."""\\n    '
+
+PASS 'In 1969, Apollo 11 landed on the Moon. The crew we' (19 tokens)
+  states: max relative difference 5.3e-06 (at layer 11); logits 5.3e-06; argmax same at 19/19 positions
+  greedy: 24/24 tokens identical; smallest top-2 margin 0.247 -> ' Neil Armstrong, Buzz Aldrin, and Michael Collins.\\n\\nThe Apollo 11 mi'
+
+PASS 'Photosynthesis converts light energy into' (6 tokens)
+  states: max relative difference 2.4e-06 (at layer 30); logits 3.7e-06; argmax same at 6/6 positions
+  greedy: 24/24 tokens identical; smallest top-2 margin 0.062 -> ' chemical energy.\\n\\nThe process of photosynthesis is a complex proces'
+
+PASS '<|im_start|>user\nWhat is 12 times 7?<|im_end|>\n<|i' (18 tokens)
+  states: max relative difference 4.4e-06 (at layer 11); logits 5.6e-06; argmax same at 18/18 positions
+  greedy: 24/24 tokens identical; smallest top-2 margin 0.161 -> 'What is 12 times 10?\\n12 times 10 is 120\\n1'
+
+PASS 'Les principales villes de France sont Paris, Lyon,' (13 tokens)
+  states: max relative difference 5.3e-06 (at layer 11); logits 1.6e-06; argmax same at 13/13 positions
+  greedy: 24/24 tokens identical; smallest top-2 margin 0.007 -> ' Marseille, and Toulouse.\\n\\nThe French language is spoken in the foll'
+
+PASS "A ship's radio operator sends a distress call usin" (10 tokens)
+  states: max relative difference 5.4e-06 (at layer 10); logits 4.8e-06; argmax same at 10/10 positions
+  greedy: 24/24 tokens identical; smallest top-2 margin 0.035 -> ' the Morse code.\\n\\nThe Morse code is a system of symbols used to comm'
+
+PASS '1, 1, 2, 3, 5, 8, 13,' (21 tokens)
+  states: max relative difference 2.8e-06 (at final norm); logits 3.0e-06; argmax same at 21/21 positions
+  greedy: 24/24 tokens identical; smallest top-2 margin 0.031 -> ' 21, 34, 55, 89, 144, 23'
+
+8 prompts: worst state difference 5.4e-06 (layer 10), worst logits 5.6e-06; greedy tokens identical 192/192
+generation time (no KV cache on either side): reference 18.0 s, llmi 78.9 s including process start
+PASS

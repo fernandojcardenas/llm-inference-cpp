@@ -2,15 +2,22 @@
 
 An LLM inference engine written from scratch in C++20. It loads small open-weights models (Apache 2.0:
 [SmolLM2](https://huggingface.co/HuggingFaceTB/SmolLM2-135M) and
-[Qwen2.5](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct)) and will generate text on an ordinary laptop CPU,
+[Qwen2.5](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct)) and generates text on an ordinary laptop CPU,
 with no GPU and no Python at run time.
 
 Every stage is checked against the reference implementation (Hugging Face `tokenizers`, `safetensors` and
 PyTorch) on real model files, in CI, on every push. Model files are untrusted input, so every parser is
 bounds-checked and fuzzed.
 
-**Status: milestone 1 of 7 done** (model loading and tokenization). Text generation starts at M2. See the
-[roadmap](docs/roadmap.md).
+**Status: milestones 1 and 2 of 7 done** (model loading, tokenization, and a forward pass that matches PyTorch
+layer by layer). Next: the key/value cache and sampling. See the [roadmap](docs/roadmap.md).
+
+```
+$ build/llmi-generate models/smollm2-135m --prompt "In 1969, Apollo 11 landed on the Moon. The crew were" --max-new 12
+In 1969, Apollo 11 landed on the Moon. The crew were Neil Armstrong, Buzz Aldrin, and Michael Collins.
+
+[19 prompt tokens, 12 generated in 4.37 s (2.75 tokens/s, no KV cache yet); load 0.51 s]
+```
 
 ## Why
 
@@ -19,7 +26,33 @@ through an API teaches very little about how it works, so this project builds th
 nothing: file formats, tokenizer, the transformer itself, then speed, quantization and serving. Each piece is
 checked against a known reference before the next one is built on top of it.
 
-## What works today (M1: loading and tokenization)
+## Forward pass (M2)
+
+`src/model/transformer.cpp` implements the Llama and Qwen2 decoder in float32: token embedding, then per layer
+RMSNorm, query/key/value projections (with Qwen2's bias), rotary position embedding, causal grouped-query
+attention, output projection, and the SwiGLU MLP, then the final norm and the output layer. Greedy generation
+picks the top-scoring token each step. There is no key/value cache yet, so each step recomputes the whole
+sequence ([how it works](docs/forward-pass.md)).
+
+It is checked against Hugging Face transformers (PyTorch, float32) on 8 prompts per model: the embeddings, the
+output of **every layer**, the final norm and all logits, then 24 greedily generated tokens:
+
+| Model | Worst difference in any layer | Greedy tokens identical | Evidence |
+|---|---|---|---|
+| SmolLM2-135M (30 layers) | 5.4e-06 of the largest value | **192 of 192** | [output](docs/evidence/m2-forward-smollm2-135m.txt) |
+| Qwen2.5-0.5B-Instruct (24 layers, q/k/v bias) | 2.7e-05 | **192 of 192** | [output](docs/evidence/m2-forward-qwen2.5-0.5b.txt) |
+
+To test the check, four realistic bugs were planted one at a time (RoPE pairing, the grouped-query head mapping,
+a causal mask that leaks one position, the wrong RoPE base). The layer comparison caught all four with
+differences of 0.02 to 17. **Two of them still generated exactly the reference's tokens**: a mask that leaks the
+next position changes every position except the last, which is the only one greedy decoding reads. Matching
+text alone is not proof of a correct model ([details](docs/forward-pass.md#would-a-bug-get-through),
+[output](docs/evidence/m2-planted-bugs.txt)).
+
+Not fast yet: generation is single-threaded plain C++ without a cache (78.9 s against PyTorch's 18.0 s on the
+SmolLM2 prompt set). M3 and M4 fix that, and must reproduce these results exactly.
+
+## Loading and tokenization (M1)
 
 - **Model loader.** Reads Hugging Face `config.json` and `model.safetensors`, memory-maps the weights (nothing
   is copied), and checks every tensor against the architecture: 272 tensors for SmolLM2-135M, 290 for
@@ -63,7 +96,8 @@ Getting to exact agreement found two things the reference does that are easy to 
 
 | Check | What it proves | Where |
 |---|---|---|
-| 34 unit tests (GoogleTest) | UTF-8 edge cases; JSON grammar, escapes, exact 64-bit integers, depth and size limits; every safetensors rejection rule, including shapes that overflow 64 bits; float conversion (F32, F16 incl. subnormals and infinity, BF16); config validation; weight-layout checks; known token ids from the reference; round trips; dropped bytes | `tests/` |
+| 48 unit tests (GoogleTest) | UTF-8 edge cases; JSON grammar, escapes, exact 64-bit integers, depth and size limits; every safetensors rejection rule, including shapes that overflow 64 bits; float conversion (F32, F16 incl. subnormals and infinity, BF16); config validation; weight-layout checks; known token ids from the reference; round trips; dropped bytes; every kernel against hand-worked or double-precision values (RoPE scores depend only on relative position); on a small random model of each architecture: causality, determinism, tracing, bad input, stop tokens | `tests/` |
+| Forward-pass cross-check | Every layer within 1e-4 of PyTorch and greedy tokens identical, on two architectures | `tools/crosscheck_forward.py`, CI `forward` job |
 | Tokenizer cross-check | Identical token ids to Hugging Face on 4.5 million inputs | `tools/crosscheck_tokenizer.py`, CI `crosscheck` job |
 | Weight cross-check | Every tensor of two models read exactly as PyTorch reads it | `tools/crosscheck_weights.py`, CI `crosscheck` job |
 | ASan + UBSan | No memory errors or undefined behaviour, with GCC and Clang | CI `test` job |
@@ -91,22 +125,28 @@ Options: `-DLLMI_SANITIZE=ON` (ASan + UBSan), `-DLLMI_BUILD_FUZZERS=ON` (Clang w
 tools/fetch_model.sh smollm2-135m models/smollm2-135m   # pinned revision, SHA-256 checked
 build/llmi-inspect models/smollm2-135m                  # architecture, tensors, parameter count
 build/llmi-tokenize models/smollm2-135m/tokenizer.json "Hello, world!"
+build/llmi-generate models/smollm2-135m --prompt "The capital of France is" --max-new 16
+build/llmi-generate models/qwen2.5-0.5b-instruct --ids 785,6722,315,9625,374 --max-new 8
 ```
 
-To run the cross-checks yourself: `pip install tokenizers==0.23.2 safetensors torch`, then see the commands at
-the top of each file in `docs/evidence/`.
+Qwen2.5's tokenizer is not supported yet, so its prompt is given as token ids (`785,6722,315,9625,374` is
+"The capital of France is") and the output is ids too: `12095,13,1084,374,279,7772,3283,304`, which the
+reference tokenizer decodes as " Paris. It is the largest city in".
+
+To run the cross-checks yourself: `pip install transformers==5.18.0 tokenizers==0.23.2 safetensors torch`, then
+see the commands at the top of each file in `docs/evidence/`.
 
 ## Layout
 
 ```
-include/llmi/   public headers: util/ (JSON, UTF-8, Result), model/ (safetensors, config, model), tokenizer/
+include/llmi/   public headers: util/ (JSON, UTF-8, Result), model/ (safetensors, config, kernels, transformer), tokenizer/
 src/            implementation; src/tokenizer/unicode_tables.inc is generated from the Unicode database
-apps/           llmi-inspect, llmi-tokenize
+apps/           llmi-inspect, llmi-tokenize, llmi-generate
 tests/          unit tests
 fuzz/           libFuzzer targets
 tools/          model download, cross-checks, Unicode table generator and probe, fuzz seeds
 testdata/       SmolLM2-135M tokenizer.json and config.json (Apache 2.0)
-docs/           roadmap, tokenizer notes, architecture decisions, evidence from real runs
+docs/           roadmap, tokenizer and forward-pass notes, architecture decisions, evidence from real runs
 ```
 
 ## Data and licences
