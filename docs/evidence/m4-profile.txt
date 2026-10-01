@@ -54,3 +54,19 @@ This roughly matches the end-to-end speed-up measured on real generation (m4-spe
 all of the remaining time -- is. See docs/performance.md for the full writeup, and
 docs/evidence/m4-llamacpp-comparison.txt for how this compares to llama.cpp on the same
 machine and models.
+
+NEON PATH, VALIDATED ON REAL AARCH64/NEON HARDWARE (not just compiled): run directly on the
+Mac's connected environment (aarch64 Linux, 4 cores, NEON/asimd confirmed present in
+/proc/cpuinfo) via g++ directly (no CMake needed on that machine for this check):
+  - kernels::dot() correctness: compared against a double-precision reference at n = 0, 1, 7,
+    8, 9, 15, 16, 17, 64, 577, 4864 (covering empty input, partial SIMD widths, and the tail
+    handler) -- all within 1e-4, same tolerance as the existing GoogleTest coverage. ALL PASS.
+  - tools/bench_kernels.cpp ran cleanly with real throughput (9-45 GFLOP/s across the
+    project's actual matmul shapes), giving ~15.2 ms/token (SmolLM2) and ~38.2 ms/token
+    (Qwen2.5) of matmul at the microbenchmark level on that machine.
+  - ThreadPool::parallel_for correctness: every index in [0, n) covered exactly once, n from 0
+    to 100,000, with 3 real worker threads (that machine's hardware_concurrency() - 1),
+    repeated 3 times. ALL PASS.
+This is on top of (not instead of) CI's macos job, which builds and tests the real engine
+with Apple Clang on an actual macos-15 runner; this check additionally confirms the NEON
+intrinsics give numerically correct results, not just that they compile.
