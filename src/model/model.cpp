@@ -5,6 +5,7 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <utility>
 
 #include "llmi/util/json.hpp"
 
@@ -109,6 +110,19 @@ Result<ModelConfig> parse_config(std::string_view json_text) {
   if (const json::Value* act = root->find("hidden_act"); act != nullptr && !(act->is_string() && act->text() == "silu")) {
     return fail("config: only hidden_act \"silu\" is supported");
   }
+  if (const json::Value* eos = root->find("eos_token_id"); eos != nullptr && !eos->is_null()) {
+    std::vector<const json::Value*> ids;
+    if (eos->is_array()) {
+      for (const auto& e : eos->items()) ids.push_back(&e);
+    } else {
+      ids.push_back(eos);
+    }
+    for (const auto* e : ids) {
+      auto n = e->as_u64();
+      if (!n || *n >= c.vocab_size) return fail("config: eos_token_id out of range");
+      c.eos_token_ids.push_back(static_cast<std::int32_t>(*n));
+    }
+  }
   if (const json::Value* rs = root->find("rope_scaling"); rs != nullptr && !rs->is_null()) {
     return fail("config: rope_scaling is not supported");
   }
@@ -182,7 +196,7 @@ Result<Model> Model::from_parts(ModelConfig cfg, SafetensorsFile weights) {
     }
   }
   Model m;
-  m.cfg_ = cfg;
+  m.cfg_ = std::move(cfg);
   m.weights_ = std::move(weights);
   return m;
 }

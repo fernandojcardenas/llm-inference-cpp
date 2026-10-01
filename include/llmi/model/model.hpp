@@ -32,6 +32,7 @@ struct ModelConfig {
   double rope_theta = 0;
   bool tie_word_embeddings = false;
   bool qkv_bias = false;
+  std::vector<std::int32_t> eos_token_ids;  // from eos_token_id (a number or a list); may be empty
 };
 
 // Parses and validates config.json text. Unsupported features (other

@@ -67,6 +67,19 @@ TEST(Config, ParsesTheRealSmolLM2Config) {
   EXPECT_EQ(c->rope_theta, 100000.0);
 }
 
+TEST(Config, ReadsStopTokens) {
+  auto with = [](const std::string& eos) {
+    std::string cfg = kTinyConfig;
+    cfg.replace(cfg.find("\"rope_scaling\": null"), 20, "\"rope_scaling\": null, \"eos_token_id\": " + eos);
+    return parse_config(cfg);
+  };
+  EXPECT_EQ(with("2")->eos_token_ids, (std::vector<std::int32_t>{2}));
+  EXPECT_EQ(with("[2, 7]")->eos_token_ids, (std::vector<std::int32_t>{2, 7}));
+  EXPECT_TRUE(with("null")->eos_token_ids.empty());
+  EXPECT_FALSE(with("10"));    // outside the vocabulary
+  EXPECT_FALSE(with("\"x\""));
+}
+
 TEST(Config, Qwen2HasQkvBias) {
   std::string cfg = kTinyConfig;
   cfg.replace(cfg.find("LlamaForCausalLM"), 16, "Qwen2ForCausalLM");

@@ -102,6 +102,50 @@ jobs:
           done
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
+  forward:
+    name: Forward pass and greedy generation vs PyTorch
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install the reference implementation
+        run: |
+          pip install transformers==5.18.0 tokenizers==0.23.2 safetensors==0.8.0 numpy==2.5.3
+          pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu
+      - name: Build llmi-generate
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DLLMI_BUILD_TESTS=OFF
+          cmake --build build --target llmi-generate -j 4
+      - uses: actions/cache@v6
+        with:
+          path: models
+          key: models-smollm2-135m-93efa2f0-qwen2.5-0.5b-instruct-7ae55760
+      - name: Fetch models (pinned revision and SHA-256)
+        run: |
+          tools/fetch_model.sh smollm2-135m models/smollm2-135m
+          tools/fetch_model.sh qwen2.5-0.5b-instruct models/qwen2.5-0.5b-instruct
+      # Every layer within 1e-4 relative of PyTorch, and greedy tokens identical.
+      # Qwen generates fewer tokens: without a KV cache (M3) each step recomputes
+      # the whole sequence, single-threaded.
+      - name: SmolLM2-135M, 8 prompts, 24 greedy tokens each
+        run: |
+          set -o pipefail
+          echo '### SmolLM2-135M vs PyTorch' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          python3 tools/crosscheck_forward.py models/smollm2-135m build/llmi-generate --new 24 2>&1 \
+            | grep -v 'Loading weights' | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+      - name: Qwen2.5-0.5B-Instruct, 8 prompts, 8 greedy tokens each
+        run: |
+          set -o pipefail
+          echo '### Qwen2.5-0.5B-Instruct vs PyTorch' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          python3 tools/crosscheck_forward.py models/qwen2.5-0.5b-instruct build/llmi-generate --new 8 2>&1 \
+            | grep -v 'Loading weights' | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
   fuzz:
     name: Fuzz (libFuzzer, 4 targets, 60 s each)
     runs-on: ubuntu-24.04
