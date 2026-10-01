@@ -1,0 +1,27 @@
+$ python3 tools/crosscheck_chat_template.py testdata/smollm2-135m-instruct build/llmi-chat-template
+PASS 'single user turn' (1 messages, add_generation_prompt=True)
+PASS 'single user turn, no generation prompt' (1 messages, add_generation_prompt=False)
+PASS 'explicit system prompt' (2 messages, add_generation_prompt=True)
+PASS 'multi-turn history' (6 messages, add_generation_prompt=True)
+PASS 'content with newlines and quotes' (1 messages, add_generation_prompt=True)
+PASS 'content with special-token-looking text' (1 messages, add_generation_prompt=True)
+PASS 'empty content' (1 messages, add_generation_prompt=True)
+PASS 'unicode content' (1 messages, add_generation_prompt=True)
+PASS 'long multi-turn, no generation prompt at the end' (10 messages, add_generation_prompt=False)
+
+testdata/smollm2-135m-instruct: 9/9 cases identical to the reference
+PASS
+
+$ python3 tools/crosscheck_chat_template.py testdata/qwen2.5-0.5b-instruct build/llmi-chat-template
+PASS 'single user turn' (1 messages, add_generation_prompt=True)
+PASS 'single user turn, no generation prompt' (1 messages, add_generation_prompt=False)
+PASS 'explicit system prompt' (2 messages, add_generation_prompt=True)
+PASS 'multi-turn history' (6 messages, add_generation_prompt=True)
+PASS 'content with newlines and quotes' (1 messages, add_generation_prompt=True)
+PASS 'content with special-token-looking text' (1 messages, add_generation_prompt=True)
+PASS 'empty content' (1 messages, add_generation_prompt=True)
+PASS 'unicode content' (1 messages, add_generation_prompt=True)
+PASS 'long multi-turn, no generation prompt at the end' (10 messages, add_generation_prompt=False)
+
+testdata/qwen2.5-0.5b-instruct: 9/9 cases identical to the reference
+PASS

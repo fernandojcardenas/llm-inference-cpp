@@ -1,0 +1,12 @@
+$ ./build/llmi-chat models/smollm2-135m-instruct --max-new 40
+(greedy, default --temperature 0)
+llmi-chat: models/smollm2-135m-instruct loaded. Type a message and press enter (Ctrl-D to quit).
+> The capital of France is Paris.> 
+Paris is famous for its iconic landmarks like the Eiffel Tower, Notre Dame Cathedral, and the Louvre Museum.> 
+
+$ ./build/llmi-chat models/smollm2-135m-instruct --max-new 30 --temperature 0.8 --top-k 40 --top-p 0.9 --seed 7
+(sampled; same seed reproduces this exact reply)
+llmi-chat: models/smollm2-135m-instruct loaded. Type a message and press enter (Ctrl-D to quit).
+> Cats are social creatures, and they enjoy playing together. They have a friendly and affectionate temperament. They can be more or less independent, and they often> 
+Dogs are highly intelligent and loyal companions. They have a strong bond with their owners, and they enjoy playing together. They are also highly social and can> 
+Birds are highly intelligent and enjoy playing together. They have a strong bond with their owners, and they enjoy singing together. They can be more or less> 

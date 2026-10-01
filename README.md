@@ -9,14 +9,14 @@ Every stage is checked against the reference implementation (Hugging Face `token
 PyTorch) on real model files, in CI, on every push. Model files are untrusted input, so every parser is
 bounds-checked and fuzzed.
 
-**Status: milestones 1 and 2 of 7 done** (model loading, tokenization, and a forward pass that matches PyTorch
-layer by layer). Next: the key/value cache and sampling. See the [roadmap](docs/roadmap.md).
+**Status: milestones 1 through 3 of 7 done** (model loading, tokenization, a forward pass that matches PyTorch
+layer by layer, a KV cache, sampling and an interactive chat CLI). Next: performance (threads, SIMD). See the
+[roadmap](docs/roadmap.md).
 
 ```
-$ build/llmi-generate models/smollm2-135m --prompt "In 1969, Apollo 11 landed on the Moon. The crew were" --max-new 12
-In 1969, Apollo 11 landed on the Moon. The crew were Neil Armstrong, Buzz Aldrin, and Michael Collins.
-
-[19 prompt tokens, 12 generated in 4.37 s (2.75 tokens/s, no KV cache yet); load 0.51 s]
+$ echo "What is the capital of France?" | build/llmi-chat models/smollm2-135m-instruct --max-new 20
+llmi-chat: models/smollm2-135m-instruct loaded. Type a message and press enter (Ctrl-D to quit).
+> The capital of France is Paris.
 ```
 
 ## Why
@@ -25,6 +25,26 @@ I'm working toward an M.S. in Computer Science with a focus on large language mo
 through an API teaches very little about how it works, so this project builds the inference side from
 nothing: file formats, tokenizer, the transformer itself, then speed, quantization and serving. Each piece is
 checked against a known reference before the next one is built on top of it.
+
+## KV cache, sampling and chat (M3)
+
+`include/llmi/model/transformer.hpp`'s `KVCache` + `Transformer::forward_cached()` keep every layer's past
+keys and values, so generating a token only computes that one new position instead of recomputing the whole
+sequence. It's checked by reproducing the no-cache baseline exactly — not by a fresh PyTorch cross-check,
+since M2 already established the baseline is correct — and measured 14.8x (SmolLM2) and 7.4x (Qwen2.5) faster
+on the same short runs ([details](docs/kv-cache.md)).
+
+`llmi::sample()` (`include/llmi/model/sampling.hpp`) adds temperature, top-k and top-p sampling alongside
+greedy decoding, checked against a plain softmax with no model involved; the same seed reproduces the same
+draws ([details](docs/sampling.md)).
+
+`llmi::chat::ChatTemplate` runs a model's own `chat_template` (a small Jinja2 program in
+`tokenizer_config.json`) to format a message list the way that model was trained on, rather than hard-coding
+one chat format — checked against `transformers`' own Jinja compiler, 9/9 cases identical on two different
+real templates ([details](docs/chat-template.md)).
+
+`build/llmi-chat MODEL_DIR` puts these together: an interactive, multi-turn chat CLI that reuses the KV cache
+across turns.
 
 ## Forward pass (M2)
 
@@ -96,10 +116,11 @@ Getting to exact agreement found two things the reference does that are easy to 
 
 | Check | What it proves | Where |
 |---|---|---|
-| 48 unit tests (GoogleTest) | UTF-8 edge cases; JSON grammar, escapes, exact 64-bit integers, depth and size limits; every safetensors rejection rule, including shapes that overflow 64 bits; float conversion (F32, F16 incl. subnormals and infinity, BF16); config validation; weight-layout checks; known token ids from the reference; round trips; dropped bytes; every kernel against hand-worked or double-precision values (RoPE scores depend only on relative position); on a small random model of each architecture: causality, determinism, tracing, bad input, stop tokens | `tests/` |
+| 74 unit tests (GoogleTest) | UTF-8 edge cases; JSON grammar, escapes, exact 64-bit integers, depth and size limits; every safetensors rejection rule, including shapes that overflow 64 bits; float conversion (F32, F16 incl. subnormals and infinity, BF16); config validation; weight-layout checks; known token ids from the reference; round trips; dropped bytes; every kernel against hand-worked or double-precision values (RoPE scores depend only on relative position); on a small random model of each architecture: causality, determinism, tracing, bad input, stop tokens, and the KV cache reproducing the no-cache baseline; sampling's filtering checked against a plain softmax; the chat template engine's control flow and whitespace handling | `tests/` |
 | Forward-pass cross-check | Every layer within 1e-4 of PyTorch and greedy tokens identical, on two architectures | `tools/crosscheck_forward.py`, CI `forward` job |
 | Tokenizer cross-check | Identical token ids to Hugging Face on 4.5 million inputs | `tools/crosscheck_tokenizer.py`, CI `crosscheck` job |
 | Weight cross-check | Every tensor of two models read exactly as PyTorch reads it | `tools/crosscheck_weights.py`, CI `crosscheck` job |
+| Chat template cross-check | Identical prompts to `transformers`' own Jinja compiler, 9 cases on two real templates | `tools/crosscheck_chat_template.py`, CI `crosscheck` job |
 | ASan + UBSan | No memory errors or undefined behaviour, with GCC and Clang | CI `test` job |
 | macOS arm64 | Builds and passes with Apple Clang, the target laptop platform | CI `macos` job |
 | Four libFuzzer targets | Arbitrary bytes into the JSON parser, the safetensors parser (output must tile the input exactly), the config and tokenizer loaders, and encode/decode (valid UTF-8 must round-trip) | `fuzz/`, CI `fuzz` job |
@@ -122,16 +143,22 @@ Options: `-DLLMI_SANITIZE=ON` (ASan + UBSan), `-DLLMI_BUILD_FUZZERS=ON` (Clang w
 ## Use
 
 ```
-tools/fetch_model.sh smollm2-135m models/smollm2-135m   # pinned revision, SHA-256 checked
-build/llmi-inspect models/smollm2-135m                  # architecture, tensors, parameter count
-build/llmi-tokenize models/smollm2-135m/tokenizer.json "Hello, world!"
-build/llmi-generate models/smollm2-135m --prompt "The capital of France is" --max-new 16
+tools/fetch_model.sh smollm2-135m-instruct models/smollm2-135m-instruct   # pinned revision, SHA-256 checked
+build/llmi-inspect models/smollm2-135m-instruct                           # architecture, tensors, parameter count
+build/llmi-tokenize models/smollm2-135m-instruct/tokenizer.json "Hello, world!"
+build/llmi-generate models/smollm2-135m-instruct --prompt "The capital of France is" --max-new 16 --kv-cache
+build/llmi-chat models/smollm2-135m-instruct --temperature 0.8 --top-k 40 --top-p 0.9 --seed 1
 build/llmi-generate models/qwen2.5-0.5b-instruct --ids 785,6722,315,9625,374 --max-new 8
 ```
 
+`llmi-generate --kv-cache` uses the KV cache (M3) instead of recomputing the whole sequence every step (M2);
+both give the same tokens, just at different speeds. `llmi-chat` is the interactive chat CLI (M3); it needs
+both a chat template and a supported tokenizer, so it works with `smollm2-135m-instruct` today.
+
 Qwen2.5's tokenizer is not supported yet, so its prompt is given as token ids (`785,6722,315,9625,374` is
 "The capital of France is") and the output is ids too: `12095,13,1084,374,279,7772,3283,304`, which the
-reference tokenizer decodes as " Paris. It is the largest city in".
+reference tokenizer decodes as " Paris. It is the largest city in". Its chat template engine still works and
+is cross-checked (`llmi-chat-template`); only tokenization and `llmi-chat` are blocked on it.
 
 To run the cross-checks yourself: `pip install transformers==5.18.0 tokenizers==0.23.2 safetensors torch`, then
 see the commands at the top of each file in `docs/evidence/`.
@@ -139,14 +166,15 @@ see the commands at the top of each file in `docs/evidence/`.
 ## Layout
 
 ```
-include/llmi/   public headers: util/ (JSON, UTF-8, Result), model/ (safetensors, config, kernels, transformer), tokenizer/
+include/llmi/   public headers: util/ (JSON, UTF-8, Result), model/ (safetensors, config, kernels, transformer, sampling), tokenizer/, chat/ (template)
 src/            implementation; src/tokenizer/unicode_tables.inc is generated from the Unicode database
-apps/           llmi-inspect, llmi-tokenize, llmi-generate
+apps/           llmi-inspect, llmi-tokenize, llmi-generate, llmi-chat, llmi-chat-template
 tests/          unit tests
 fuzz/           libFuzzer targets
 tools/          model download, cross-checks, Unicode table generator and probe, fuzz seeds
-testdata/       SmolLM2-135M tokenizer.json and config.json (Apache 2.0)
-docs/           roadmap, tokenizer and forward-pass notes, architecture decisions, evidence from real runs
+testdata/       tokenizer.json/config.json/tokenizer_config.json for the three models (Apache 2.0)
+docs/           roadmap, tokenizer, forward-pass, KV cache, sampling and chat-template notes, architecture
+                decisions, evidence from real runs
 ```
 
 ## Data and licences

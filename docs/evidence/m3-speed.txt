@@ -1,0 +1,27 @@
+$ ./build/llmi-generate models/smollm2-135m --prompt "In 1969, Apollo 11 landed on the Moon. The crew were" --max-new 24 --ignore-eos
+(no KV cache, M2 baseline)
+The Apollo 11 mission was the first manned mission
+[19 prompt tokens, 24 generated in 254.37 s (0.09 tokens/s, no KV cache); load 4.06 s]
+
+$ ./build/llmi-generate models/smollm2-135m --prompt "In 1969, Apollo 11 landed on the Moon. The crew were" --max-new 24 --ignore-eos --kv-cache
+(KV cache, M3)
+The Apollo 11 mission was the first manned mission
+[19 prompt tokens, 24 generated in 17.14 s (1.40 tokens/s, KV cache); load 3.66 s]
+
+SmolLM2-135M: 254.37s -> 17.14s, 14.8x faster for 19+24=43 total positions. Generated text identical.
+
+$ ./build/llmi-generate models/qwen2.5-0.5b-instruct --ids 785,6722,315,9625,374 --max-new 16 --ignore-eos --json
+(no KV cache, M2 baseline)
+{"prompt_ids":[785,6722,315,9625,374],"generated_ids":[12095,13,1084,374,279,7772,3283,304,4505,323,279,4843,7772,3283,304,279],"load_seconds":14.252,"generate_seconds":247.565}
+
+$ ./build/llmi-generate models/qwen2.5-0.5b-instruct --ids 785,6722,315,9625,374 --max-new 16 --ignore-eos --json --kv-cache
+(KV cache, M3)
+{"prompt_ids":[785,6722,315,9625,374],"generated_ids":[12095,13,1084,374,279,7772,3283,304,4505,323,279,4843,7772,3283,304,279],"load_seconds":16.036,"generate_seconds":33.371}
+
+Qwen2.5-0.5B-Instruct: 247.565s -> 33.371s, 7.4x faster for 5+16=21 total positions. generated_ids identical (byte-for-byte), confirming the KV cache reproduces the no-cache baseline while running faster.
+
+Measured on the same machine, same build (CMAKE_BUILD_TYPE=Release), back to back. Absolute seconds are not
+comparable to the M2 evidence files (docs/evidence/m2-forward-*.txt), which were captured on different
+hardware; only the no-cache-vs-cache ratio on this run is the point. The speed-up grows with sequence length
+(no-cache recomputes the whole prefix every step: O(T^2) total work; the cache makes each step O(T)), so a
+longer conversation benefits more than this short example shows.
