@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Build and test (${{ matrix.compiler }}, ASan + UBSan)
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libclang-rt-18-dev
+      - name: Configure
+        env:
+          CC: ${{ matrix.compiler == 'gcc' && 'gcc' || 'clang' }}
+          CXX: ${{ matrix.compiler == 'gcc' && 'g++' || 'clang++' }}
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DLLMI_SANITIZE=ON -DLLMI_WARNINGS_AS_ERRORS=ON
+      - name: Build
+        run: cmake --build build
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+
+  macos:
+    name: Build and test (macOS arm64, Apple Clang)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DLLMI_SANITIZE=ON -DLLMI_WARNINGS_AS_ERRORS=ON
+      - name: Build
+        run: cmake --build build -j 3
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+
+  lint:
+    name: clang-tidy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build clang-tidy-18
+      - name: Configure
+        env:
+          CC: clang
+          CXX: clang++
+        run: cmake -S . -B build -G Ninja -DLLMI_BUILD_TESTS=OFF
+      - name: clang-tidy (warnings are errors)
+        run: run-clang-tidy-18 -quiet -p build 'src/.*|apps/.*'
+
+  crosscheck:
+    name: Cross-check against Hugging Face and PyTorch
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install the reference implementations
+        run: |
+          pip install tokenizers==0.23.2 safetensors==0.8.0 numpy==2.5.3
+          pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu
+      - name: Build the tools
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DLLMI_BUILD_TESTS=OFF
+          cmake --build build -j 4
+      - uses: actions/cache@v6
+        with:
+          path: models
+          key: models-smollm2-135m-93efa2f0-qwen2.5-0.5b-instruct-7ae55760
+      - name: Fetch models (pinned revision and SHA-256)
+        run: |
+          tools/fetch_model.sh smollm2-135m models/smollm2-135m
+          tools/fetch_model.sh qwen2.5-0.5b-instruct models/qwen2.5-0.5b-instruct
+      - name: Tokenizer — every input must give identical token ids
+        run: |
+          set -o pipefail
+          echo '### Tokenizer cross-check (SmolLM2-135M)' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          python3 tools/crosscheck_tokenizer.py models/smollm2-135m/tokenizer.json build/llmi-tokenize \
+            --random 50000 --all-codepoints | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+      - name: Weights — every tensor read as PyTorch reads it
+        run: |
+          set -o pipefail
+          echo '### Weight cross-check' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          for m in smollm2-135m qwen2.5-0.5b-instruct; do
+            build/llmi-inspect models/$m | tee -a "$GITHUB_STEP_SUMMARY"
+            build/llmi-inspect models/$m --tensor-stats > $m-stats.jsonl
+            python3 tools/crosscheck_weights.py models/$m/model.safetensors $m-stats.jsonl | tee -a "$GITHUB_STEP_SUMMARY"
+            echo >> "$GITHUB_STEP_SUMMARY"
+          done
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  fuzz:
+    name: Fuzz (libFuzzer, 4 targets, 60 s each)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libclang-rt-18-dev
+      - name: Build fuzzers
+        env:
+          CC: clang
+          CXX: clang++
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLLMI_BUILD_TESTS=OFF -DLLMI_BUILD_FUZZERS=ON
+          cmake --build build --target fuzz_json fuzz_safetensors fuzz_config fuzz_tokenizer
+      - name: Seed inputs
+        run: python3 tools/make_fuzz_seeds.py seeds
+      - name: Fuzz the JSON parser
+        run: mkdir -p c-json && ./build/fuzz_json -max_total_time=60 -max_len=4096 c-json seeds/json
+      - name: Fuzz the safetensors parser
+        run: mkdir -p c-st && ./build/fuzz_safetensors -max_total_time=60 -max_len=4096 c-st seeds/safetensors
+      - name: Fuzz the config.json and tokenizer.json loaders
+        run: mkdir -p c-config && ./build/fuzz_config -max_total_time=60 -max_len=8192 c-config seeds/config
+      - name: Fuzz encode and decode with the SmolLM2 tokenizer
+        run: mkdir -p c-tok && ./build/fuzz_tokenizer -max_total_time=60 -max_len=4096 c-tok seeds/tokenizer
