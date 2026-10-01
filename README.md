@@ -9,9 +9,9 @@ Every stage is checked against the reference implementation (Hugging Face `token
 PyTorch) on real model files, in CI, on every push. Model files are untrusted input, so every parser is
 bounds-checked and fuzzed.
 
-**Status: milestones 1 through 3 of 7 done** (model loading, tokenization, a forward pass that matches PyTorch
-layer by layer, a KV cache, sampling and an interactive chat CLI). Next: performance (threads, SIMD). See the
-[roadmap](docs/roadmap.md).
+**Status: milestones 1 through 4 of 7 done** (model loading, tokenization, a forward pass that matches PyTorch
+layer by layer, a KV cache, sampling, an interactive chat CLI, and a threaded, SIMD matmul). Next:
+quantization. See the [roadmap](docs/roadmap.md).
 
 ```
 $ echo "What is the capital of France?" | build/llmi-chat models/smollm2-135m-instruct --max-new 20
@@ -46,6 +46,23 @@ real templates ([details](docs/chat-template.md)).
 `build/llmi-chat MODEL_DIR` puts these together: an interactive, multi-turn chat CLI that reuses the KV cache
 across turns.
 
+## Performance: threads and SIMD (M4)
+
+`kernels::matmul` is nearly all of the forward pass's time (profiled before optimizing anything:
+[details](docs/performance.md)), so M4 makes it faster without changing what it computes. `llmi::util::ThreadPool`
+(`include/llmi/util/thread_pool.hpp`) parallelizes matmul's independent output rows across a small, persistent
+pool of worker threads — bit-for-bit identical to the serial version, since different output rows write
+disjoint memory and the floating-point operations happen in the same order either way. `kernels::dot()` is
+chosen at compile time: AVX2+FMA on x86_64, NEON on Apple Silicon (part of the base ISA there, no flag needed),
+or the original portable scalar version as a fallback.
+
+Measured on a 2-core machine, same tokens generated before and after: 2.05x (SmolLM2) and 2.39x (Qwen2.5)
+faster generation ([details](docs/performance.md), [evidence](docs/evidence/m4-speed.txt)). Compared with
+llama.cpp, same machine, same weights, f32 precision in both: within 1.5–1.6x at generation (the same
+matrix-vector matmul shape in both engines); 2.5–2.7x slower at prompt processing, an honest gap from
+llama.cpp's row-blocked GEMM, which this engine's matmul doesn't have yet
+([evidence](docs/evidence/m4-llamacpp-comparison.txt)).
+
 ## Forward pass (M2)
 
 `src/model/transformer.cpp` implements the Llama and Qwen2 decoder in float32: token embedding, then per layer
@@ -69,8 +86,9 @@ next position changes every position except the last, which is the only one gree
 text alone is not proof of a correct model ([details](docs/forward-pass.md#would-a-bug-get-through),
 [output](docs/evidence/m2-planted-bugs.txt)).
 
-Not fast yet: generation is single-threaded plain C++ without a cache (78.9 s against PyTorch's 18.0 s on the
-SmolLM2 prompt set). M3 and M4 fix that, and must reproduce these results exactly.
+Not fast at this stage: generation here is single-threaded plain C++ without a cache (78.9 s against PyTorch's
+18.0 s on the SmolLM2 prompt set). M3 (KV cache) and M4 (threads, SIMD) fix that — both reproduce these exact
+results, just faster; see their own sections above.
 
 ## Loading and tokenization (M1)
 
@@ -116,7 +134,7 @@ Getting to exact agreement found two things the reference does that are easy to 
 
 | Check | What it proves | Where |
 |---|---|---|
-| 74 unit tests (GoogleTest) | UTF-8 edge cases; JSON grammar, escapes, exact 64-bit integers, depth and size limits; every safetensors rejection rule, including shapes that overflow 64 bits; float conversion (F32, F16 incl. subnormals and infinity, BF16); config validation; weight-layout checks; known token ids from the reference; round trips; dropped bytes; every kernel against hand-worked or double-precision values (RoPE scores depend only on relative position); on a small random model of each architecture: causality, determinism, tracing, bad input, stop tokens, and the KV cache reproducing the no-cache baseline; sampling's filtering checked against a plain softmax; the chat template engine's control flow and whitespace handling | `tests/` |
+| 80 unit tests (GoogleTest) | UTF-8 edge cases; JSON grammar, escapes, exact 64-bit integers, depth and size limits; every safetensors rejection rule, including shapes that overflow 64 bits; float conversion (F32, F16 incl. subnormals and infinity, BF16); config validation; weight-layout checks; known token ids from the reference; round trips; dropped bytes; every kernel against hand-worked or double-precision values (RoPE scores depend only on relative position); on a small random model of each architecture: causality, determinism, tracing, bad input, stop tokens, and the KV cache reproducing the no-cache baseline; sampling's filtering checked against a plain softmax; the chat template engine's control flow and whitespace handling; the thread pool's chunking (every index covered exactly once, any worker count) and matmul's threaded output bit-for-bit against a row-by-row reference | `tests/` |
 | Forward-pass cross-check | Every layer within 1e-4 of PyTorch and greedy tokens identical, on two architectures | `tools/crosscheck_forward.py`, CI `forward` job |
 | Tokenizer cross-check | Identical token ids to Hugging Face on 4.5 million inputs | `tools/crosscheck_tokenizer.py`, CI `crosscheck` job |
 | Weight cross-check | Every tensor of two models read exactly as PyTorch reads it | `tools/crosscheck_weights.py`, CI `crosscheck` job |
@@ -138,7 +156,11 @@ ctest --test-dir build
 ```
 
 Options: `-DLLMI_SANITIZE=ON` (ASan + UBSan), `-DLLMI_BUILD_FUZZERS=ON` (Clang with libFuzzer),
-`-DLLMI_WARNINGS_AS_ERRORS=ON`.
+`-DLLMI_WARNINGS_AS_ERRORS=ON`, `-DLLMI_ENABLE_SIMD=OFF` (portable scalar `dot()` only — for a CPU without
+AVX2; on by default, adding `-mavx2 -mfma` on x86_64, nothing needed on Apple Silicon). The default build
+above has `LLMI_SANITIZE=OFF`; for speed measurements specifically, also pass `-DLLMI_BUILD_TESTS=OFF` to
+skip fetching GoogleTest (docs/performance.md explains why sanitizers specifically must be off to measure
+speed, not just avoided as the default).
 
 ## Use
 
@@ -166,12 +188,12 @@ see the commands at the top of each file in `docs/evidence/`.
 ## Layout
 
 ```
-include/llmi/   public headers: util/ (JSON, UTF-8, Result), model/ (safetensors, config, kernels, transformer, sampling), tokenizer/, chat/ (template)
+include/llmi/   public headers: util/ (JSON, UTF-8, Result, thread pool), model/ (safetensors, config, kernels, transformer, sampling), tokenizer/, chat/ (template)
 src/            implementation; src/tokenizer/unicode_tables.inc is generated from the Unicode database
 apps/           llmi-inspect, llmi-tokenize, llmi-generate, llmi-chat, llmi-chat-template
 tests/          unit tests
 fuzz/           libFuzzer targets
-tools/          model download, cross-checks, Unicode table generator and probe, fuzz seeds
+tools/          model download, cross-checks, Unicode table generator and probe, fuzz seeds, matmul microbenchmark
 testdata/       tokenizer.json/config.json/tokenizer_config.json for the three models (Apache 2.0)
 docs/           roadmap, tokenizer, forward-pass, KV cache, sampling and chat-template notes, architecture
                 decisions, evidence from real runs

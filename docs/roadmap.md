@@ -8,7 +8,7 @@ Target dates assume about eight hours a week.
 | **M1 Loading and tokenization** | safetensors and config.json loaded and validated, hardened and fuzzed; byte-level BPE tokenizer with token ids identical to Hugging Face | Oct 2026 | ✅ Done |
 | **M2 Forward pass** | RMSNorm, rotary embeddings, grouped-query attention and SwiGLU in plain C++; every layer's output within tolerance of PyTorch; greedy generation identical token for token on a prompt set, in CI | Nov 2026 | ✅ Done (Oct 2026) |
 | **M3 KV cache, sampling, chat** | Key/value cache with a measured speed-up; temperature, top-k and top-p sampling, reproducible from a seed; chat templates and a chat CLI | Dec 2026 | ✅ Done (Oct 2026) |
-| **M4 Performance** | Thread pool, NEON (Apple Silicon) and AVX2 kernels, profiling; prompt and generation speed compared with llama.cpp on the same machine and model | Jan–Feb 2027 | Planned |
+| **M4 Performance** | Thread pool, NEON (Apple Silicon) and AVX2 kernels, profiling; prompt and generation speed compared with llama.cpp on the same machine and model | Jan–Feb 2027 | ✅ Done (Oct 2026) |
 | **M5 Quantization** | 8-bit and 4-bit block formats; quality loss measured by perplexity against the full-precision model and llama.cpp; speed and memory table | Mar 2027 | Planned |
 | **M6 Hardened GGUF loader** | Read GGUF v3 models with every size and offset checked, fuzzed, with a regression set of malformed files and a threat model for loading untrusted model files | Apr 2027 | Planned |
 | **M7 Server** | OpenAI-compatible chat completions API with streaming, request limits, localhost by default, Docker image, load test | May–Jun 2027 | Planned |
@@ -42,3 +42,14 @@ sharded safetensors (`model.safetensors.index.json`) for larger models.
   Qwen2.5-0.5B-Instruct's real templates ([chat-template.md](chat-template.md)).
 - `llmi-chat`: an interactive multi-turn chat CLI, reusing the KV cache across turns by diffing retokenized
   history against what's cached.
+
+## M4 results
+
+- Profiled before optimizing: matmul is ~50% of per-token decode time; Qwen2.5's 151,936-word vocabulary
+  makes its final `lm_head` projection the single largest matmul in the model ([evidence](evidence/m4-profile.txt)).
+- Thread pool (`llmi::util::ThreadPool`) parallelizes matmul's independent output rows, bit-for-bit identical
+  to the serial version; AVX2+FMA (x86_64) / NEON (Apple Silicon) `dot()`, chosen at compile time. 2.05x
+  (SmolLM2) and 2.39x (Qwen2.5) faster generation on this sandbox's 2 cores ([evidence](evidence/m4-speed.txt)).
+- Compared with llama.cpp, same machine, same weights, f32 (no quantization): within 1.5–1.6x at generation
+  (same matmul shape in both engines); 2.5–2.7x slower at prompt processing, an honest gap from llama.cpp's
+  row-blocked GEMM, which this engine doesn't have ([evidence](evidence/m4-llamacpp-comparison.txt)).

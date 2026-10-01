@@ -1,0 +1,48 @@
+M4 speed-up: threaded + SIMD matmul vs the M3 baseline, same machine, same commit base, back
+to back.
+
+IMPORTANT: measured with a clean Release build and LLMI_SANITIZE=OFF. The sandbox's normal
+`build/` directory (used for all test, lint and fuzz runs) has LLMI_SANITIZE=ON baked in for
+ASan+UBSan coverage, which is correct for testing but gives misleading *performance* numbers
+-- a sanitizer-instrumented binary runs this engine's matmul-bound workload about 8x slower
+than a clean Release build on the same machine, same commit. M3's own sandbox evidence
+(m3-speed.txt) was captured on such a sanitized build; M4's numbers below use a dedicated
+`build-perf/` configuration (-DLLMI_SANITIZE=OFF -DLLMI_BUILD_TESTS=OFF) so the "before" and
+"after" numbers in this file are on equal footing with each other, but not directly comparable
+to m3-speed.txt's numbers.
+
+Reproduce:
+  cmake -S . -B build-perf -DCMAKE_BUILD_TYPE=Release -DLLMI_SANITIZE=OFF -DLLMI_BUILD_TESTS=OFF
+  cmake --build build-perf -j$(nproc)
+  build-perf/llmi-generate models/smollm2-135m --prompt "The capital of France is" --max-new 16 --kv-cache
+  build-perf/llmi-generate models/qwen2.5-0.5b-instruct --ids 785,6722,315,9625,374 --max-new 16 --kv-cache
+
+Machine: 2 logical CPUs (this is why the thread pool's calling-thread-plus-1-worker scheme
+matters at all -- on a bigger machine, e.g. the Mac's many Apple Silicon cores, the thread
+pool uses all of them and should show a bigger speed-up from threading alone).
+
+BEFORE (single-threaded scalar dot(), the M1-M3 kernels::matmul), 16 generated tokens:
+  SmolLM2-135M-Instruct, kv-cache:     1.17 s  (13.64 tok/s)
+  SmolLM2-135M-Instruct, no cache:     3.18 s  ( 5.04 tok/s)
+  Qwen2.5-0.5B-Instruct, kv-cache:     4.33 s  ( 3.70 tok/s)
+  Qwen2.5-0.5B-Instruct, no cache:    11.84 s  ( 1.35 tok/s)
+
+AFTER (thread-pooled matmul + AVX2/FMA dot(), M4), 16 generated tokens, same tokens produced
+in every case (checked: identical generated ids to the row above, and to M2/M3's evidence):
+  SmolLM2-135M-Instruct, kv-cache (5 runs): 0.55s/0.64s/0.57s/0.53s/0.58s -> mean 0.57s (28.06 tok/s)
+    speed-up over BEFORE: 2.05x
+  SmolLM2-135M-Instruct, no cache:           1.44 s (11.08 tok/s) -- speed-up: 2.20x
+  Qwen2.5-0.5B-Instruct, kv-cache (5 runs): 1.77s/1.73s/2.18s/1.71s/1.74s -> mean 1.83s (8.84 tok/s)
+    speed-up over BEFORE: 2.39x
+  Qwen2.5-0.5B-Instruct, no cache:            4.84 s ( 3.31 tok/s) -- speed-up: 2.45x
+
+Generated tokens checked identical in every case (threading and SIMD change only the order
+floating-point additions happen in, not what the model computes; see
+tests/thread_pool_test.cpp and Kernels.MatmulAboveTheThreadingThresholdMatchesARowByRowReference
+in tests/transformer_test.cpp for the correctness checks this claim rests on, run under
+ASan+UBSan in CI).
+
+Threading alone (before adding AVX2, i.e. scalar dot() + thread-pooled matmul) measured
+separately: SmolLM2 kv-cache 1.17s -> 0.76s (1.54x), Qwen2.5 kv-cache 4.33s -> 2.75s (1.57x).
+So on this 2-core machine, threading and SIMD each contribute roughly half of the overall
+~2.0-2.5x; with more cores (the Mac), threading's share should grow.

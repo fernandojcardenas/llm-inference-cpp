@@ -1,0 +1,53 @@
+M4: prompt and generation speed compared with llama.cpp, same machine, same model, same
+precision (f32, no quantization -- the fairest comparison of raw matmul/threading work,
+since quantization would change what's actually being computed, not just how fast).
+
+Machine: this sandbox, 2 logical CPUs. Same machine both engines were built and run on.
+
+llama.cpp: commit ec7630a (2026-10-01), built with CMAKE_BUILD_TYPE=Release, GGML_NATIVE=ON
+(so -march=native: this CPU's full AVX2 *and* AVX-512 instruction set, which this project's
+own kernels.cpp does not use -- see docs/performance.md), OpenMP threading, -t 2 (2 threads,
+matching this engine's 2-core thread pool). Weights converted from the exact same
+testdata/*/model.safetensors this project already uses, at f32 (no quantization):
+  python3 convert_hf_to_gguf.py MODEL_DIR --outfile out.gguf --outtype f32
+Benchmarked with the project's own llama-bench, 3-5 repeats, reporting mean +/- stddev.
+
+This engine: build-perf/ (Release, LLMI_SANITIZE=OFF; see m4-speed.txt), --kv-cache (M3),
+threaded + AVX2/FMA matmul (M4). No batching/blocking across prompt rows (see
+docs/performance.md); llama.cpp's GEMM does block and tile across rows, which is the main
+reason the gap below is bigger for prompt processing than for single-token generation.
+
+GENERATION (16 tokens, greedy, after a short prompt -- the single-token-at-a-time matrix x
+vector matmul that's the same shape in both engines, so this is the most apples-to-apples
+comparison):
+                          llama.cpp (f32, 2 threads)     this engine (f32, --kv-cache)
+  SmolLM2-135M-Instruct   46.05 +/- 2.92 tok/s            28.06 tok/s (mean of 5 runs)
+  Qwen2.5-0.5B-Instruct   13.43 +/- 0.50 tok/s             8.84 tok/s (mean of 5 runs)
+
+  llama.cpp is 1.64x (SmolLM2) and 1.52x (Qwen2.5) faster at generation. For a from-scratch
+  engine with no custom assembly and no cache-blocked GEMM -- just a thread pool over matmul's
+  output rows and an AVX2+FMA dot product -- landing within ~1.5-1.6x of a mature, long-tuned
+  inference engine on the exact operation it spends almost all its time on is the honest
+  headline here.
+
+PROMPT PROCESSING (prefill: 35-36 tokens in one batched forward pass; this engine measured as
+plain wall-clock time for the first forward_cached() call, since --max-new 1 only ever makes
+that one call before returning):
+                          llama.cpp (f32, 2 threads)     this engine (f32, --kv-cache)
+  SmolLM2-135M-Instruct   377.28 +/- 21.67 tok/s           ~152 tok/s (35 tok / mean 0.23s of 3 runs)
+  Qwen2.5-0.5B-Instruct   145.45 +/- 8.49 tok/s            ~53 tok/s (36 tok / mean 0.68s of 3 runs)
+
+  llama.cpp is 2.5x (SmolLM2) and 2.7x (Qwen2.5) faster at prompt processing -- a bigger gap
+  than generation's, because prefill is a multi-row (batched) matmul, and llama.cpp's GEMM
+  blocks and tiles across rows to reuse each weight tile for every row while it's still in
+  cache; this engine's matmul parallelizes over output columns regardless of row count, with
+  no such row-blocking. A real limitation, not hidden: row-blocked matmul is a natural next
+  step (candidate for a future milestone, not done here -- M4's scope was threading + SIMD +
+  measurement, not a from-scratch GEMM).
+
+Reproduce llama.cpp's side:
+  git clone --depth 1 https://github.com/ggml-org/llama.cpp
+  cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DLLAMA_CURL=OFF
+  cmake --build build -j -- llama-bench
+  python3 convert_hf_to_gguf.py MODEL_DIR --outfile out.gguf --outtype f32
+  build/bin/llama-bench -m out.gguf -p 35 -n 16 -t 2 -r 5

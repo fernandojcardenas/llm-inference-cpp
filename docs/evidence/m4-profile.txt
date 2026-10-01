@@ -1,0 +1,56 @@
+M4 profiling notes (sandbox, pre-optimization) -- done before writing any M4 code, to decide
+what was actually worth optimizing rather than guessing.
+
+FINDING 1: the sandbox's normal `build/` directory was configured with LLMI_SANITIZE=ON
+(ASan+UBSan), which is correct for the test job but gives misleading *performance* numbers
+-- M3's "254.4s / 17.1s" sandbox evidence was captured on a sanitizer-instrumented binary.
+A clean Release build (build-perf/, LLMI_SANITIZE=OFF) is ~8x faster on the same machine,
+same commit, same tokens generated. M4 benchmarks must use a non-sanitized Release build,
+and this should be called out explicitly in the docs so a reader isn't misled by comparing
+M3's evidence files (sanitized) to M4's (not).
+
+Baseline, this machine, build-perf (Release, no sanitizers), commit fdec93a:
+  SmolLM2-135M    kv-cache:    16 tok in 1.17s  (13.64 tok/s)
+  SmolLM2-135M    no-cache:    16 tok in 3.18s  ( 5.04 tok/s)
+  Qwen2.5-0.5B    kv-cache:    16 tok in 4.33s  ( 3.70 tok/s)
+  Qwen2.5-0.5B    no-cache:    16 tok in 11.84s ( 1.35 tok/s)
+
+FINDING 2: matmul dominates, as expected. Microbenchmark of kernels::matmul at the
+project's real per-layer shapes (bench_kernels.cpp, rows=1 i.e. decode):
+
+  SmolLM2 per-layer matmul total ~0.575 ms x 30 layers = 17.25 ms, + final lm_head logits
+  matmul (576x49152) alone = 15.60 ms => ~32.85 ms of matmul per decode token.
+  Measured real decode cost (kv-cache run): 1170ms/16 = ~73 ms/token -- so matmul is
+  roughly half of the real per-token cost; the rest is attention score/softmax loops,
+  RoPE, and per-step heap allocation (new std::vector for h/q/attn/proj/gate/up/scores/
+  logits on every single forward_cached call).
+
+  Qwen2.5 per-layer matmul total ~2.65 ms x 24 layers = 63.5 ms, + lm_head logits
+  (896x151936) alone = 73.3 ms => ~136.9 ms matmul per decode token.
+  Measured real decode cost: 4330/16 = ~270 ms/token -- again matmul ~50%, rest overhead.
+  Qwen's huge vocab (151,936) makes the final logits matmul the single largest matmul in
+  the whole forward pass, bigger than all 24 attention+MLP layers combined.
+
+CONCLUSION for M4 scope:
+  1. Thread pool, parallelizing matmul's independent output rows: biggest, most general win
+     (helps every matmul, especially the huge lm_head one), and uses both cores on this
+     sandbox and however many are on the Mac.
+  2. SIMD dot(): secondary multiplier on top of threading, implemented per-platform
+     (AVX2+FMA here, NEON on the Mac) since auto-vectorization at -O3 alone already gets
+     decent throughput (11-18 GFLOP/s in the microbenchmark) but explicit intrinsics should
+     do better, especially with FMA.
+  3. Per-step heap allocation during cached decode is a secondary but real cost; worth a
+     one-line fix (reuse buffers across forward_cached calls) if time allows, documented
+     either way.
+
+AFTER (same microbenchmark, tools/bench_kernels.cpp, threaded + AVX2/FMA matmul, M4):
+  SmolLM2 per-layer matmul total ~0.336 ms x 30 layers = 10.08 ms, + logits 2.35 ms
+  => ~12.42 ms of matmul per decode token (was ~32.85 ms) -- 2.6x.
+  Qwen2.5 per-layer matmul total ~1.271 ms x 24 layers = 30.51 ms, + logits 28.24 ms
+  => ~58.75 ms of matmul per decode token (was ~136.9 ms) -- 2.3x.
+
+This roughly matches the end-to-end speed-up measured on real generation (m4-speed.txt:
+~2.0-2.45x), confirming matmul is still where nearly all of the improvement -- and nearly
+all of the remaining time -- is. See docs/performance.md for the full writeup, and
+docs/evidence/m4-llamacpp-comparison.txt for how this compares to llama.cpp on the same
+machine and models.
