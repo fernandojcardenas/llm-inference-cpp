@@ -4,6 +4,7 @@
 //   llmi-generate MODEL_DIR --ids 504,3575,282 --max-new 16 --ignore-eos --json
 //   llmi-generate MODEL_DIR --ids 504,3575,282 --dump trace.bin
 //   llmi-generate MODEL_DIR --prompt "..." --max-new 32 --kv-cache
+//   llmi-generate MODEL_DIR --prompt "..." --max-new 32 --kv-cache --quant q8_0
 //
 // --prompt needs a tokenizer.json the engine supports (SmolLM2's); --ids
 // works with any supported model. --json prints the token ids and timing as
@@ -12,7 +13,10 @@
 // float32 little-endian arrays) for tools/crosscheck_forward.py. --kv-cache
 // uses generate_greedy_cached (M3) instead of generate_greedy's no-cache
 // baseline (M2); both must produce the same tokens (tests/transformer_test.cpp),
-// so this flag only changes speed, used to measure M3's speed-up.
+// so this flag only changes speed, used to measure M3's speed-up. --quant
+// (f32, the default; q8_0; q4_0) block-quantizes every matmul weight at
+// load time (M5, docs/quantization.md) -- --json's "weight_bytes" field
+// reports this run's weight storage for M5's memory table.
 
 #include <chrono>
 #include <cstdio>
@@ -51,6 +55,19 @@ std::string join(const std::vector<llmi::TokenId>& ids) {
   return s;
 }
 
+bool parse_quant_type(const std::string& s, llmi::quant::Type& out) {
+  if (s == "f32") {
+    out = llmi::quant::Type::F32;
+  } else if (s == "q8_0") {
+    out = llmi::quant::Type::Q8_0;
+  } else if (s == "q4_0") {
+    out = llmi::quant::Type::Q4_0;
+  } else {
+    return false;
+  }
+  return true;
+}
+
 bool write_dump(const std::string& path, const llmi::ForwardTrace& trace, const std::vector<float>& logits,
                 std::size_t tokens, std::size_t hidden, std::size_t vocab) {
   std::ofstream out(path, std::ios::binary);
@@ -69,7 +86,7 @@ int run(int argc, char** argv) {
   if (argc < 2) {
     std::fprintf(stderr,
                  "usage: llmi-generate MODEL_DIR (--prompt TEXT | --ids N,N,...) [--max-new N] [--ignore-eos] [--json] "
-                 "[--dump FILE]\n");
+                 "[--dump FILE] [--kv-cache] [--quant f32|q8_0|q4_0]\n");
     return 2;
   }
   const std::string dir = argv[1];
@@ -80,6 +97,7 @@ int run(int argc, char** argv) {
   bool ignore_eos = false;
   bool as_json = false;
   bool use_kv_cache = false;
+  auto quant_type = llmi::quant::Type::F32;
   for (int i = 2; i < argc; ++i) {
     const std::string a = argv[i];
     const bool has_value = i + 1 < argc;
@@ -94,6 +112,11 @@ int run(int argc, char** argv) {
       max_new = std::stoul(argv[++i]);
     } else if (a == "--dump" && has_value) {
       dump = argv[++i];
+    } else if (a == "--quant" && has_value) {
+      if (!parse_quant_type(argv[++i], quant_type)) {
+        std::fprintf(stderr, "error: --quant takes f32, q8_0 or q4_0\n");
+        return 2;
+      }
     } else if (a == "--ignore-eos") {
       ignore_eos = true;
     } else if (a == "--json") {
@@ -112,7 +135,7 @@ int run(int argc, char** argv) {
     std::fprintf(stderr, "error: %s\n", model.error().c_str());
     return 1;
   }
-  auto tf = llmi::Transformer::load(model.value());
+  auto tf = llmi::Transformer::load(model.value(), quant_type);
   if (!tf) {
     std::fprintf(stderr, "error: %s\n", tf.error().c_str());
     return 1;
@@ -166,8 +189,10 @@ int run(int argc, char** argv) {
   const double gen_s = seconds_since(t_gen);
 
   if (as_json) {
-    std::printf("{\"prompt_ids\":[%s],\"generated_ids\":[%s],\"load_seconds\":%.3f,\"generate_seconds\":%.3f}\n",
-                join(ids).c_str(), join(out.value()).c_str(), load_s, gen_s);
+    std::printf(
+        "{\"prompt_ids\":[%s],\"generated_ids\":[%s],\"load_seconds\":%.3f,\"generate_seconds\":%.3f,"
+        "\"weight_bytes\":%zu}\n",
+        join(ids).c_str(), join(out.value()).c_str(), load_s, gen_s, tf->weight_bytes());
     return 0;
   }
   if (tok) {
@@ -176,9 +201,9 @@ int run(int argc, char** argv) {
   } else {
     std::printf("generated ids: %s\n", join(out.value()).c_str());
   }
-  std::printf("[%zu prompt tokens, %zu generated in %.2f s (%.2f tokens/s, %s); load %.2f s]\n", ids.size(),
-              out->size(), gen_s, static_cast<double>(out->size()) / gen_s, use_kv_cache ? "KV cache" : "no KV cache",
-              load_s);
+  std::printf("[%zu prompt tokens, %zu generated in %.2f s (%.2f tokens/s, %s); load %.2f s; %zu weight bytes]\n",
+              ids.size(), out->size(), gen_s, static_cast<double>(out->size()) / gen_s,
+              use_kv_cache ? "KV cache" : "no KV cache", load_s, tf->weight_bytes());
   return 0;
 }
 

@@ -249,6 +249,58 @@ TEST(Transformer, RejectsBadInput) {
   EXPECT_FALSE(tf->forward(std::vector<TokenId>(65, 1)));  // longer than the context
 }
 
+// --------------------------------------------------------------- quantization (M5)
+
+TEST(Transformer, QuantizedForwardStaysCloseToFloat32AndPicksTheSameArgmax) {
+  // A whole-model check that Weight's dispatch (M5) is wired correctly:
+  // quantizing every matmul weight (RMSNorm weights, biases and inv_freq
+  // stay float32, see Transformer::load) should perturb logits by a small,
+  // bounded amount -- not reproduce them bit-for-bit like the KV cache
+  // tests above, since quantization is lossy by design -- and should leave
+  // greedy decoding's argmax choice unchanged on this well-separated tiny
+  // model (hidden_size=16 and intermediate_size=24 are both smaller than
+  // kBlockSize=32, so this also exercises quantize()'s partial-block path
+  // at the whole-model level, not just in quant_test.cpp's unit tests).
+  for (const char* arch : {"LlamaForCausalLM", "Qwen2ForCausalLM"}) {
+    auto tiny = make_tiny(arch, true, 11);
+    auto f32 = Transformer::load(tiny.model, quant::Type::F32);
+    auto q8 = Transformer::load(tiny.model, quant::Type::Q8_0);
+    auto q4 = Transformer::load(tiny.model, quant::Type::Q4_0);
+    ASSERT_TRUE(f32 && q8 && q4);
+    const std::vector<TokenId> ids = {5, 9, 1, 30, 7};
+    auto base = f32->forward(ids);
+    auto l8 = q8->forward(ids);
+    auto l4 = q4->forward(ids);
+    ASSERT_TRUE(base && l8 && l4) << arch;
+    ASSERT_EQ(base->size(), l8->size());
+    ASSERT_EQ(base->size(), l4->size());
+    double max_abs_diff8 = 0, max_abs_diff4 = 0;
+    for (std::size_t i = 0; i < base->size(); ++i) {
+      max_abs_diff8 = std::max(max_abs_diff8, static_cast<double>(std::abs((*base)[i] - (*l8)[i])));
+      max_abs_diff4 = std::max(max_abs_diff4, static_cast<double>(std::abs((*base)[i] - (*l4)[i])));
+    }
+    // Loose bounds: this is a 2-layer toy model with random weights, not a
+    // tuned tolerance from real-model evidence (that's evidence/m5-*.txt).
+    // The point here is "quantization perturbs logits by a bounded amount
+    // and nothing is badly broken (NaN, huge divergence)", checked on every
+    // run rather than real-model numbers that would need the test weights.
+    EXPECT_LT(max_abs_diff8, 1.0) << arch << " q8_0 max abs logit diff " << max_abs_diff8;
+    EXPECT_LT(max_abs_diff4, 3.0) << arch << " q4_0 max abs logit diff " << max_abs_diff4;
+    EXPECT_EQ(argmax(base->data(), base->size()), argmax(l8->data(), l8->size())) << arch << " q8_0 argmax";
+    EXPECT_EQ(argmax(base->data(), base->size()), argmax(l4->data(), l4->size())) << arch << " q4_0 argmax";
+  }
+}
+
+TEST(Transformer, QuantizedWeightBytesAreSmallerThanFloat32) {
+  auto tiny = make_tiny("LlamaForCausalLM", true, 12);
+  auto f32 = Transformer::load(tiny.model, quant::Type::F32);
+  auto q8 = Transformer::load(tiny.model, quant::Type::Q8_0);
+  auto q4 = Transformer::load(tiny.model, quant::Type::Q4_0);
+  ASSERT_TRUE(f32 && q8 && q4);
+  EXPECT_GT(f32->weight_bytes(), q8->weight_bytes());
+  EXPECT_GT(q8->weight_bytes(), q4->weight_bytes());
+}
+
 // --------------------------------------------------------------- KV cache
 
 TEST(KVCache, PrefillInOneCallMatchesForward) {

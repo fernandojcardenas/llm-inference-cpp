@@ -4,6 +4,8 @@
 #include <vector>
 
 #include "llmi/model/model.hpp"
+#include "llmi/model/quant.hpp"
+#include "llmi/model/weight.hpp"
 #include "llmi/tokenizer/tokenizer.hpp"
 #include "llmi/util/result.hpp"
 
@@ -51,10 +53,20 @@ class KVCache {
 // (transformer_test.cpp) checks it reproduces forward() exactly.
 class Transformer {
  public:
-  // Converts every weight to float32 (BF16 and F16 convert exactly).
-  static Result<Transformer> load(const Model& model);
+  // Converts every weight to float32 (BF16 and F16 convert exactly), then,
+  // when weight_type isn't Type::F32, quantizes every weight matrix the
+  // forward pass matmuls against (M5: Q8_0 or Q4_0 -- see
+  // docs/quantization.md and ADR 0006). RMSNorm weights, biases and
+  // inv_freq stay float32 regardless: they're small and numerically
+  // sensitive, the same choice llama.cpp makes for Q8_0/Q4_0.
+  static Result<Transformer> load(const Model& model, quant::Type weight_type = quant::Type::F32);
 
   [[nodiscard]] const ModelConfig& config() const { return cfg_; }
+
+  // Total bytes of quantizable weight storage (matmul matrices + the
+  // embedding/lm_head table), at whichever type load() was given -- used to
+  // report M5's memory table.
+  [[nodiscard]] std::size_t weight_bytes() const;
 
   // Logits for the last position (vocab_size values), or for every position
   // (tokens x vocab_size) when all_positions is set.
@@ -87,13 +99,15 @@ class Transformer {
 
  private:
   struct Layer {
-    std::vector<float> attn_norm, wq, wk, wv, bq, bk, bv, wo;
-    std::vector<float> mlp_norm, w_gate, w_up, w_down;
+    std::vector<float> attn_norm, bq, bk, bv;
+    Weight wq, wk, wv, wo;
+    std::vector<float> mlp_norm;
+    Weight w_gate, w_up, w_down;
   };
   ModelConfig cfg_;
-  std::vector<float> embed_;
+  Weight embed_;
   std::vector<float> final_norm_;
-  std::vector<float> lm_head_;  // empty when tied to embed_
+  Weight lm_head_;  // empty when tied to embed_
   std::vector<Layer> layers_;
   std::vector<float> inv_freq_;
 };

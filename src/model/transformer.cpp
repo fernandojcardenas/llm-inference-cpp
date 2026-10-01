@@ -23,32 +23,38 @@ std::size_t argmax(const float* x, std::size_t n) {
   return static_cast<std::size_t>(std::max_element(x, x + n) - x);  // first maximum
 }
 
-Result<Transformer> Transformer::load(const Model& model) {
+Result<Transformer> Transformer::load(const Model& model, quant::Type weight_type) {
   Transformer t;
   t.cfg_ = model.config();
   const auto& c = t.cfg_;
   const auto& w = model.weights();
-  t.embed_ = to_f32(w, "model.embed_tokens.weight");
+  // Every matmul weight goes through to_weight so quantization (M5) is a
+  // single switch; RMSNorm weights and biases stay exact float32.
+  const auto to_weight = [&](const std::string& name, std::size_t out, std::size_t in) {
+    return Weight::quantized(to_f32(w, name), out, in, weight_type);
+  };
+  const auto sz = [](std::uint32_t v) { return static_cast<std::size_t>(v); };
+  t.embed_ = to_weight("model.embed_tokens.weight", sz(c.vocab_size), sz(c.hidden_size));
   t.final_norm_ = to_f32(w, "model.norm.weight");
-  if (!c.tie_word_embeddings) t.lm_head_ = to_f32(w, "lm_head.weight");
+  if (!c.tie_word_embeddings) t.lm_head_ = to_weight("lm_head.weight", sz(c.vocab_size), sz(c.hidden_size));
   t.layers_.resize(c.num_layers);
   for (std::uint32_t i = 0; i < c.num_layers; ++i) {
     const std::string p = "model.layers." + std::to_string(i) + ".";
     Layer& l = t.layers_[i];
     l.attn_norm = to_f32(w, p + "input_layernorm.weight");
-    l.wq = to_f32(w, p + "self_attn.q_proj.weight");
-    l.wk = to_f32(w, p + "self_attn.k_proj.weight");
-    l.wv = to_f32(w, p + "self_attn.v_proj.weight");
+    l.wq = to_weight(p + "self_attn.q_proj.weight", sz(c.num_heads) * sz(c.head_dim), sz(c.hidden_size));
+    l.wk = to_weight(p + "self_attn.k_proj.weight", sz(c.num_kv_heads) * sz(c.head_dim), sz(c.hidden_size));
+    l.wv = to_weight(p + "self_attn.v_proj.weight", sz(c.num_kv_heads) * sz(c.head_dim), sz(c.hidden_size));
     if (c.qkv_bias) {
       l.bq = to_f32(w, p + "self_attn.q_proj.bias");
       l.bk = to_f32(w, p + "self_attn.k_proj.bias");
       l.bv = to_f32(w, p + "self_attn.v_proj.bias");
     }
-    l.wo = to_f32(w, p + "self_attn.o_proj.weight");
+    l.wo = to_weight(p + "self_attn.o_proj.weight", sz(c.hidden_size), sz(c.num_heads) * sz(c.head_dim));
     l.mlp_norm = to_f32(w, p + "post_attention_layernorm.weight");
-    l.w_gate = to_f32(w, p + "mlp.gate_proj.weight");
-    l.w_up = to_f32(w, p + "mlp.up_proj.weight");
-    l.w_down = to_f32(w, p + "mlp.down_proj.weight");
+    l.w_gate = to_weight(p + "mlp.gate_proj.weight", sz(c.intermediate_size), sz(c.hidden_size));
+    l.w_up = to_weight(p + "mlp.up_proj.weight", sz(c.intermediate_size), sz(c.hidden_size));
+    l.w_down = to_weight(p + "mlp.down_proj.weight", sz(c.hidden_size), sz(c.intermediate_size));
   }
   // inv_freq[i] = 1 / theta^(2i/d), computed in float32 like the reference.
   const std::size_t d = c.head_dim;
@@ -58,6 +64,15 @@ Result<Transformer> Transformer::load(const Model& model) {
     t.inv_freq_[i] = 1.0F / std::pow(static_cast<float>(c.rope_theta), exponent);
   }
   return t;
+}
+
+std::size_t Transformer::weight_bytes() const {
+  std::size_t total = embed_.byte_size() + lm_head_.byte_size();
+  for (const Layer& l : layers_) {
+    total += l.wq.byte_size() + l.wk.byte_size() + l.wv.byte_size() + l.wo.byte_size();
+    total += l.w_gate.byte_size() + l.w_up.byte_size() + l.w_down.byte_size();
+  }
+  return total;
 }
 
 Result<std::vector<float>> Transformer::forward(const std::vector<TokenId>& tokens, bool all_positions,
@@ -81,7 +96,7 @@ Result<std::vector<float>> Transformer::forward(const std::vector<TokenId>& toke
 
   std::vector<float> x(T * H);
   for (std::size_t t = 0; t < T; ++t) {
-    std::copy_n(embed_.data() + static_cast<std::size_t>(tokens[t]) * H, H, x.data() + t * H);
+    embed_.row(static_cast<std::size_t>(tokens[t]), H, x.data() + t * H);
   }
   if (trace != nullptr) {
     trace->states.clear();
@@ -102,9 +117,9 @@ Result<std::vector<float>> Transformer::forward(const std::vector<TokenId>& toke
   for (const Layer& l : layers_) {
     // Attention block.
     for (std::size_t t = 0; t < T; ++t) kernels::rmsnorm(x.data() + t * H, l.attn_norm.data(), H, eps, h.data() + t * H);
-    kernels::matmul(h.data(), T, H, l.wq.data(), nh * hd, l.bq.empty() ? nullptr : l.bq.data(), q.data());
-    kernels::matmul(h.data(), T, H, l.wk.data(), nkv * hd, l.bk.empty() ? nullptr : l.bk.data(), k.data());
-    kernels::matmul(h.data(), T, H, l.wv.data(), nkv * hd, l.bv.empty() ? nullptr : l.bv.data(), v.data());
+    l.wq.matmul(h.data(), T, H, nh * hd, l.bq.empty() ? nullptr : l.bq.data(), q.data());
+    l.wk.matmul(h.data(), T, H, nkv * hd, l.bk.empty() ? nullptr : l.bk.data(), k.data());
+    l.wv.matmul(h.data(), T, H, nkv * hd, l.bv.empty() ? nullptr : l.bv.data(), v.data());
     for (std::size_t t = 0; t < T; ++t) {
       for (std::size_t hh = 0; hh < nh; ++hh) kernels::rope(q.data() + (t * nh + hh) * hd, hd, t, inv_freq_.data());
       for (std::size_t hh = 0; hh < nkv; ++hh) kernels::rope(k.data() + (t * nkv + hh) * hd, hd, t, inv_freq_.data());
@@ -126,15 +141,15 @@ Result<std::vector<float>> Transformer::forward(const std::vector<TokenId>& toke
         }
       }
     }
-    kernels::matmul(attn.data(), T, nh * hd, l.wo.data(), H, nullptr, proj.data());
+    l.wo.matmul(attn.data(), T, nh * hd, H, nullptr, proj.data());
     for (std::size_t i = 0; i < T * H; ++i) x[i] += proj[i];
 
     // MLP block.
     for (std::size_t t = 0; t < T; ++t) kernels::rmsnorm(x.data() + t * H, l.mlp_norm.data(), H, eps, h.data() + t * H);
-    kernels::matmul(h.data(), T, H, l.w_gate.data(), F, nullptr, gate.data());
-    kernels::matmul(h.data(), T, H, l.w_up.data(), F, nullptr, up.data());
+    l.w_gate.matmul(h.data(), T, H, F, nullptr, gate.data());
+    l.w_up.matmul(h.data(), T, H, F, nullptr, up.data());
     for (std::size_t i = 0; i < T * F; ++i) gate[i] = kernels::silu(gate[i]) * up[i];
-    kernels::matmul(gate.data(), T, F, l.w_down.data(), H, nullptr, proj.data());
+    l.w_down.matmul(gate.data(), T, F, H, nullptr, proj.data());
     for (std::size_t i = 0; i < T * H; ++i) x[i] += proj[i];
 
     if (trace != nullptr) trace->states.push_back(x);
@@ -143,10 +158,10 @@ Result<std::vector<float>> Transformer::forward(const std::vector<TokenId>& toke
   for (std::size_t t = 0; t < T; ++t) kernels::rmsnorm(x.data() + t * H, final_norm_.data(), H, eps, h.data() + t * H);
   if (trace != nullptr) trace->states.push_back(h);
 
-  const float* head = lm_head_.empty() ? embed_.data() : lm_head_.data();
+  const Weight& head = lm_head_.empty() ? embed_ : lm_head_;
   const std::size_t first = all_positions ? 0 : T - 1;
   std::vector<float> logits((T - first) * V);
-  kernels::matmul(h.data() + first * H, T - first, H, head, V, nullptr, logits.data());
+  head.matmul(h.data() + first * H, T - first, H, V, nullptr, logits.data());
   return logits;
 }
 
@@ -198,7 +213,7 @@ Result<std::vector<float>> Transformer::forward_cached(const std::vector<TokenId
 
   std::vector<float> x(T * H);
   for (std::size_t t = 0; t < T; ++t) {
-    std::copy_n(embed_.data() + static_cast<std::size_t>(tokens[t]) * H, H, x.data() + t * H);
+    embed_.row(static_cast<std::size_t>(tokens[t]), H, x.data() + t * H);
   }
   if (trace != nullptr) {
     trace->states.clear();
@@ -222,11 +237,9 @@ Result<std::vector<float>> Transformer::forward_cached(const std::vector<TokenId
     // Attention block: compute Q for the new positions and K/V for the new
     // positions only, appending K/V into the cache; attend over 0..base+t.
     for (std::size_t t = 0; t < T; ++t) kernels::rmsnorm(x.data() + t * H, l.attn_norm.data(), H, eps, h.data() + t * H);
-    kernels::matmul(h.data(), T, H, l.wq.data(), nh * hd, l.bq.empty() ? nullptr : l.bq.data(), q.data());
-    kernels::matmul(h.data(), T, H, l.wk.data(), nkv * hd, l.bk.empty() ? nullptr : l.bk.data(),
-                    k_cache + base * nkv * hd);
-    kernels::matmul(h.data(), T, H, l.wv.data(), nkv * hd, l.bv.empty() ? nullptr : l.bv.data(),
-                    v_cache + base * nkv * hd);
+    l.wq.matmul(h.data(), T, H, nh * hd, l.bq.empty() ? nullptr : l.bq.data(), q.data());
+    l.wk.matmul(h.data(), T, H, nkv * hd, l.bk.empty() ? nullptr : l.bk.data(), k_cache + base * nkv * hd);
+    l.wv.matmul(h.data(), T, H, nkv * hd, l.bv.empty() ? nullptr : l.bv.data(), v_cache + base * nkv * hd);
     for (std::size_t t = 0; t < T; ++t) {
       for (std::size_t hh = 0; hh < nh; ++hh) kernels::rope(q.data() + (t * nh + hh) * hd, hd, base + t, inv_freq_.data());
       for (std::size_t hh = 0; hh < nkv; ++hh) kernels::rope(k_cache + ((base + t) * nkv + hh) * hd, hd, base + t, inv_freq_.data());
@@ -249,15 +262,15 @@ Result<std::vector<float>> Transformer::forward_cached(const std::vector<TokenId
         }
       }
     }
-    kernels::matmul(attn.data(), T, nh * hd, l.wo.data(), H, nullptr, proj.data());
+    l.wo.matmul(attn.data(), T, nh * hd, H, nullptr, proj.data());
     for (std::size_t i = 0; i < T * H; ++i) x[i] += proj[i];
 
     // MLP block.
     for (std::size_t t = 0; t < T; ++t) kernels::rmsnorm(x.data() + t * H, l.mlp_norm.data(), H, eps, h.data() + t * H);
-    kernels::matmul(h.data(), T, H, l.w_gate.data(), F, nullptr, gate.data());
-    kernels::matmul(h.data(), T, H, l.w_up.data(), F, nullptr, up.data());
+    l.w_gate.matmul(h.data(), T, H, F, nullptr, gate.data());
+    l.w_up.matmul(h.data(), T, H, F, nullptr, up.data());
     for (std::size_t i = 0; i < T * F; ++i) gate[i] = kernels::silu(gate[i]) * up[i];
-    kernels::matmul(gate.data(), T, F, l.w_down.data(), H, nullptr, proj.data());
+    l.w_down.matmul(gate.data(), T, F, H, nullptr, proj.data());
     for (std::size_t i = 0; i < T * H; ++i) x[i] += proj[i];
 
     if (trace != nullptr) trace->states.push_back(x);
@@ -267,10 +280,10 @@ Result<std::vector<float>> Transformer::forward_cached(const std::vector<TokenId
   for (std::size_t t = 0; t < T; ++t) kernels::rmsnorm(x.data() + t * H, final_norm_.data(), H, eps, h.data() + t * H);
   if (trace != nullptr) trace->states.push_back(h);
 
-  const float* head = lm_head_.empty() ? embed_.data() : lm_head_.data();
+  const Weight& head = lm_head_.empty() ? embed_ : lm_head_;
   const std::size_t first = all_positions ? 0 : T - 1;
   std::vector<float> logits((T - first) * V);
-  kernels::matmul(h.data() + first * H, T - first, H, head, V, nullptr, logits.data());
+  head.matmul(h.data() + first * H, T - first, H, V, nullptr, logits.data());
   return logits;
 }
 

@@ -45,6 +45,8 @@ add_library(llmi
   src/model/safetensors.cpp
   src/model/model.cpp
   src/model/kernels.cpp
+  src/model/quant.cpp
+  src/model/weight.cpp
   src/model/transformer.cpp
   src/model/sampling.cpp
   src/chat/template.cpp
@@ -63,6 +65,8 @@ add_executable(llmi-chat-template apps/llmi-chat-template/main.cpp)
 target_link_libraries(llmi-chat-template PRIVATE llmi llmi_warnings)
 add_executable(llmi-chat apps/llmi-chat/main.cpp)
 target_link_libraries(llmi-chat PRIVATE llmi llmi_warnings)
+add_executable(llmi-perplexity apps/llmi-perplexity/main.cpp)
+target_link_libraries(llmi-perplexity PRIVATE llmi llmi_warnings)
 
 set(LLMI_TESTDATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/testdata")
 
@@ -85,7 +89,8 @@ if(LLMI_BUILD_TESTS)
     tests/transformer_test.cpp
     tests/sampling_test.cpp
     tests/chat_template_test.cpp
-    tests/thread_pool_test.cpp)
+    tests/thread_pool_test.cpp
+    tests/quant_test.cpp)
   target_compile_definitions(llmi_tests PRIVATE LLMI_TESTDATA_DIR="${LLMI_TESTDATA_DIR}")
   target_link_libraries(llmi_tests PRIVATE llmi llmi_warnings GTest::gtest_main)
   include(GoogleTest)
