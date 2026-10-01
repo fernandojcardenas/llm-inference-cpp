@@ -1,0 +1,17 @@
+$ python3 tools/probe_reference_unicode.py UnicodeData-15.1.0.txt UnicodeData-16.0.0.txt UnicodeData-17.0.0.txt
+tokenizers 0.23.2; candidate Unicode versions: 15.1.0, 16.0.0, 17.0.0
+
+letter (pattern \p{L})
+   4302 code points new in 16.0.0 (vs 15.1.0): reference agrees on 4302
+   4644 code points new in 17.0.0 (vs 16.0.0): reference agrees on 0
+  all 1,112,064 code points vs Unicode 16.0.0: 0 differ
+
+number (pattern \p{N})
+     80 code points new in 16.0.0 (vs 15.1.0): reference agrees on 80
+     13 code points new in 17.0.0 (vs 16.0.0): reference agrees on 0
+  all 1,112,064 code points vs Unicode 16.0.0: 0 differ
+
+digit (Digits pre-tokenizer)
+     80 code points new in 16.0.0 (vs 15.1.0): reference agrees on 80
+     13 code points new in 17.0.0 (vs 16.0.0): reference agrees on 13
+  all 1,112,064 code points vs Unicode 17.0.0: 0 differ

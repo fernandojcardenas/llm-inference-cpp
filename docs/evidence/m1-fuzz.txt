@@ -1,0 +1,17 @@
+# libFuzzer, 60 s per target, seeded with tools/make_fuzz_seeds.py, on a 2-core Linux machine (two targets at a time). Fuzzer build directory shown as build/. Last two lines of each run.
+
+$ ./build/fuzz_json -max_total_time=60 -max_len=4096 c-json seeds/json
+#1983302	DONE   cov: 699 ft: 3558 corp: 607/161Kb lim: 4096 exec/s: 32513 rss: 531Mb
+Done 1983302 runs in 61 second(s)
+
+$ ./build/fuzz_safetensors -max_total_time=60 -max_len=4096 c-st seeds/safetensors
+#3468591	DONE   cov: 1180 ft: 3540 corp: 531/69Kb lim: 4096 exec/s: 56862 rss: 514Mb
+Done 3468591 runs in 61 second(s)
+
+$ ./build/fuzz_config -max_total_time=60 -max_len=8192 c-config seeds/config
+#1233186	DONE   cov: 1140 ft: 3508 corp: 487/124Kb lim: 3709 exec/s: 20216 rss: 473Mb
+Done 1233186 runs in 61 second(s)
+
+$ ./build/fuzz_tokenizer -max_total_time=60 -max_len=4096 c-tok seeds/tokenizer
+#402013	DONE   cov: 1971 ft: 5955 corp: 531/46Kb lim: 1185 exec/s: 6590 rss: 532Mb
+Done 402013 runs in 61 second(s)

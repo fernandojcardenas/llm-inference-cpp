@@ -1,0 +1,8 @@
+$ python3 tools/crosscheck_tokenizer.py testdata/smollm2-135m/tokenizer.json build-rel/llmi-tokenize --random 50000 --all-codepoints
+lines 4498842, tokens 30561333, round-trip mismatches 0, lines with dropped bytes 2118132 (2652047 bytes)
+tokenizers 0.23.2, Python 3.13.15
+inputs: 586 standard-library files + 50000 random strings (seed 1) + 4,448,256 code-point probes (every code point x 4)
+characters: 24,644,961  tokens: 30,561,333
+identical token ids: 4,498,842 of 4,498,842 inputs
+time: Hugging Face 39.04 s in-process (batched, multithreaded), llmi-tokenize 9.85 s single-threaded including JSON I/O
+PASS
