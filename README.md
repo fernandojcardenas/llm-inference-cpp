@@ -66,6 +66,22 @@ names and nesting for every field this engine implements
 serve) was caught by actually running the built image, not assumed from reading Docker's docs —
 see the Docker section of [docs/server.md](docs/server.md).
 
+### Screenshots
+
+Real terminal output from an actual run on the SmolLM2-135M-Instruct model, not hand-typed:
+
+`llmi-chat`, two turns:
+
+![llmi-chat: two real turns](docs/screenshots/llmi-chat-demo.png)
+
+`llmi-server`, a health check and a non-streaming `/v1/chat/completions` request:
+
+![llmi-server: health check and a chat completion](docs/screenshots/llmi-server-demo.png)
+
+The same endpoint with `"stream": true` -- one SSE `data:` chunk per generated token, then `[DONE]` (truncated here for length; the real response has one chunk per token):
+
+![llmi-server: a streamed chat completion](docs/screenshots/llmi-server-stream-demo.png)
+
 ## Hardened GGUF loader (M6)
 
 `gguf::GGUFFile::parse()`/`open()` (`src/model/gguf.cpp`) is a second, from-scratch reader for
