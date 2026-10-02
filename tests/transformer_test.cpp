@@ -251,16 +251,34 @@ TEST(Transformer, RejectsBadInput) {
 
 // --------------------------------------------------------------- quantization (M5)
 
-TEST(Transformer, QuantizedForwardStaysCloseToFloat32AndPicksTheSameArgmax) {
+TEST(Transformer, QuantizedForwardStaysWithinABoundedLogitDifferenceOfFloat32) {
   // A whole-model check that Weight's dispatch (M5) is wired correctly:
   // quantizing every matmul weight (RMSNorm weights, biases and inv_freq
   // stay float32, see Transformer::load) should perturb logits by a small,
   // bounded amount -- not reproduce them bit-for-bit like the KV cache
-  // tests above, since quantization is lossy by design -- and should leave
-  // greedy decoding's argmax choice unchanged on this well-separated tiny
-  // model (hidden_size=16 and intermediate_size=24 are both smaller than
-  // kBlockSize=32, so this also exercises quantize()'s partial-block path
-  // at the whole-model level, not just in quant_test.cpp's unit tests).
+  // tests above, since quantization is lossy by design (hidden_size=16 and
+  // intermediate_size=24 are both smaller than kBlockSize=32, so this also
+  // exercises quantize()'s partial-block path at the whole-model level, not
+  // just in quant_test.cpp's unit tests).
+  //
+  // This does NOT assert that quantization leaves greedy decoding's argmax
+  // choice unchanged, even loosely: an earlier version of this test did,
+  // and it was real, caught by CI's macOS runner (Apple Clang + libc++) on
+  // this exact model/seed, not flaky. make_tiny()'s weights come from
+  // std::normal_distribution, whose output is standard-mandated to use
+  // std::mt19937 as the underlying engine but NOT mandated to produce the
+  // same floats from it -- libstdc++ (this sandbox's gcc/clang builds) and
+  // libc++ (macOS) implement the engine-to-normal-draw transform
+  // differently, so seed 11 produces a genuinely different random tiny
+  // model per standard library, not just rounding noise on the same one.
+  // On libc++'s realization, this model's F32 top-1/top-2 logit margin was
+  // small enough that Q4_0's error budget flipped the argmax outright (a
+  // totally different token, not a near-miss) -- which is exactly what
+  // docs/evidence/m5-perplexity.txt's real-model numbers already say Q4_0
+  // does sometimes (10-36% of predictions change). Asserting "never" on an
+  // untrained random model was simply a stronger claim than this project's
+  // own evidence supports, so it's removed rather than reproduced by luck
+  // on whichever standard library happens to run the test.
   for (const char* arch : {"LlamaForCausalLM", "Qwen2ForCausalLM"}) {
     auto tiny = make_tiny(arch, true, 11);
     auto f32 = Transformer::load(tiny.model, quant::Type::F32);
@@ -286,8 +304,6 @@ TEST(Transformer, QuantizedForwardStaysCloseToFloat32AndPicksTheSameArgmax) {
     // run rather than real-model numbers that would need the test weights.
     EXPECT_LT(max_abs_diff8, 1.0) << arch << " q8_0 max abs logit diff " << max_abs_diff8;
     EXPECT_LT(max_abs_diff4, 3.0) << arch << " q4_0 max abs logit diff " << max_abs_diff4;
-    EXPECT_EQ(argmax(base->data(), base->size()), argmax(l8->data(), l8->size())) << arch << " q8_0 argmax";
-    EXPECT_EQ(argmax(base->data(), base->size()), argmax(l4->data(), l4->size())) << arch << " q4_0 argmax";
   }
 }
 

@@ -154,7 +154,7 @@ int run(int argc, char** argv) {
     }
     // Position t's logits (row t) predict chunk[t+1]; the chunk's last
     // position has no "next token" within this chunk and isn't scored.
-    const std::size_t t_start = std::min(first, chunk.size() > 0 ? chunk.size() - 1 : 0);
+    const std::size_t t_start = std::min(first, !chunk.empty() ? chunk.size() - 1 : 0);
     for (std::size_t t = t_start; t + 1 < chunk.size(); ++t) {
       const float* row = logits->data() + t * V;
       const float mx = *std::max_element(row, row + V);

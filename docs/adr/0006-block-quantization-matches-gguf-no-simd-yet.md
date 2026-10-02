@@ -64,7 +64,14 @@ original `std::vector<float>` and calls `kernels::matmul` unchanged, so M1-M4's 
 guarantees (the KV cache tests, the threading tests) are completely unaffected unless
 quantization is actually requested -- checked directly by every existing test continuing to
 pass without modification, plus new tests
-(`Transformer.QuantizedForwardStaysCloseToFloat32AndPicksTheSameArgmax`) for the lossy case.
+(`Transformer.QuantizedForwardStaysWithinABoundedLogitDifferenceOfFloat32`) for the lossy case. That
+test does not assert quantization preserves greedy decoding's argmax choice, even loosely -- an
+earlier version did, and CI's macOS runner (Apple Clang + libc++) caught it as a real, non-flaky
+failure: `std::normal_distribution` (used to generate the test's random tiny-model weights) is only
+required to use `std::mt19937` as its underlying engine, not to draw the same floats from it, so the
+same seed produces a genuinely different random model on libc++ than on libstdc++ -- and on that
+model, Q4_0's error budget flipped the top prediction outright. Removed rather than reproduced by
+luck on whichever standard library happens to run the test; see the test's own comment for detail.
 
 ### No SIMD for the quantized matmul (yet)
 
