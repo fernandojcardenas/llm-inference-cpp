@@ -9,9 +9,10 @@ Every stage is checked against the reference implementation (Hugging Face `token
 PyTorch) on real model files, in CI, on every push. Model files are untrusted input, so every parser is
 bounds-checked and fuzzed.
 
-**Status: milestones 1 through 6 of 7 done** (model loading, tokenization, a forward pass that matches PyTorch
+**Status: all 7 milestones done** (model loading, tokenization, a forward pass that matches PyTorch
 layer by layer, a KV cache, sampling, an interactive chat CLI, a threaded SIMD matmul, 8-bit/4-bit
-quantization, and a hardened GGUF loader). Next: a server. See the [roadmap](docs/roadmap.md).
+quantization, a hardened GGUF loader, and an OpenAI-compatible chat completions server). See the
+[roadmap](docs/roadmap.md).
 
 ```
 $ echo "What is the capital of France?" | build/llmi-chat models/smollm2-135m-instruct --max-new 20
@@ -45,6 +46,25 @@ real templates ([details](docs/chat-template.md)).
 
 `build/llmi-chat MODEL_DIR` puts these together: an interactive, multi-turn chat CLI that reuses the KV cache
 across turns.
+
+## Server (M7)
+
+`llmi-server MODEL_DIR` serves an OpenAI-compatible `/v1/chat/completions` (streaming and
+non-streaming), `/v1/models` and `/health` over HTTP, using cpp-httplib (vendored, MIT — this
+engine's first third-party dependency) for transport while this engine's own hardened JSON
+parser still parses every request body ([details](docs/server.md); [ADR
+0008](docs/adr/0008-server-transport-and-single-generation-slot.md)).
+
+Every request's actual generation is serialized behind one mutex, because `kernels::matmul`'s
+thread pool can't be called from more than one thread at once — found by reading
+`llmi::util::ThreadPool`'s own contract, not assumed, and confirmed by [load-testing a running
+server](docs/evidence/m7-loadtest.txt): latency grows with concurrency, throughput doesn't.
+Checked against llama.cpp's own `llama-server` on the same GGUF file both ways — identical field
+names and nesting for every field this engine implements
+([evidence](docs/evidence/m7-llamacpp-comparison.txt)). A real Docker-networking bug (binding
+`127.0.0.1` *inside* a container makes a published port connect and immediately reset, never
+serve) was caught by actually running the built image, not assumed from reading Docker's docs —
+see the Docker section of [docs/server.md](docs/server.md).
 
 ## Hardened GGUF loader (M6)
 
@@ -241,14 +261,15 @@ see the commands at the top of each file in `docs/evidence/`.
 ## Layout
 
 ```
-include/llmi/   public headers: util/ (JSON, UTF-8, Result, thread pool), model/ (safetensors, gguf, config, kernels, quant, weight, transformer, sampling), tokenizer/, chat/ (template)
+include/llmi/   public headers: util/ (JSON, UTF-8, Result, thread pool), model/ (safetensors, gguf, config, kernels, quant, weight, transformer, sampling), tokenizer/, chat/ (template), server/ (request, response, server)
 src/            implementation; src/tokenizer/unicode_tables.inc is generated from the Unicode database
-apps/           llmi-inspect, llmi-gguf-inspect, llmi-tokenize, llmi-generate, llmi-chat, llmi-chat-template, llmi-perplexity
+apps/           llmi-inspect, llmi-gguf-inspect, llmi-tokenize, llmi-generate, llmi-chat, llmi-chat-template, llmi-perplexity, llmi-server
 tests/          unit tests
 fuzz/           libFuzzer targets
-tools/          model download, cross-checks, Unicode table generator and probe, fuzz seeds, matmul microbenchmark, perplexity-eval token ids
+tools/          model download, cross-checks, Unicode table generator and probe, fuzz seeds, matmul microbenchmark, perplexity-eval token ids, server load test
 testdata/       tokenizer.json/config.json/tokenizer_config.json for the three models (Apache 2.0)
-docs/           roadmap, tokenizer, forward-pass, KV cache, sampling, chat-template, quantization and GGUF
+third_party/    vendored cpp-httplib (MIT) -- this engine's HTTP transport, see THIRD-PARTY.md
+docs/           roadmap, tokenizer, forward-pass, KV cache, sampling, chat-template, quantization, GGUF and server
                 notes, a GGUF threat model, architecture
                 decisions, evidence from real runs
 ```

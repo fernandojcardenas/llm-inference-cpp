@@ -1,0 +1,60 @@
+M7 cross-check: this engine's /v1/chat/completions against llama.cpp's llama-server
+=====================================================================================
+Same model both ways: smollm2-135m-instruct-f32.gguf (the exact GGUF file M6's own
+cross-check tooling produced from testdata/smollm2-135m-instruct), llama.cpp built
+from the same checkout used for M4/M5's comparisons (tools/server target, b1-ec7630a).
+
+llama-server invocation:
+  llama-server -m smollm2-135m-instruct-f32.gguf --host 127.0.0.1 --port 8200 -c 512 --no-webui
+
+llmi-server invocation:
+  llmi-server models/smollm2-135m-instruct --port 8103
+
+--- Non-streaming request, both servers, same prompt ---
+
+llama-server response:
+{"choices":[{"finish_reason":"stop","index":0,"message":{"role":"assistant","content":"Hello!"}}],
+ "created":1790963580,"model":"smollm2-135m-instruct-f32.gguf","system_fingerprint":"b1-ec7630a",
+ "object":"chat.completion","usage":{"completion_tokens":3,"prompt_tokens":37,"total_tokens":40,
+ "prompt_tokens_details":{"cached_tokens":0}},"id":"chatcmpl-...","timings":{...}}
+
+llmi-server response:
+{"id":"chatcmpl-0","object":"chat.completion","created":1790963374,"model":"llmi",
+ "choices":[{"index":0,"message":{"role":"assistant","content":"Hello, I'm here to assist you..."},
+ "finish_reason":"stop"}],"usage":{"prompt_tokens":37,"completion_tokens":17,"total_tokens":54}}
+
+Fields this engine implements match llama-server's exactly in name, type and nesting:
+id, object ("chat.completion"), created, model, choices[].index, choices[].message.role,
+choices[].message.content, choices[].finish_reason, usage.prompt_tokens,
+usage.completion_tokens, usage.total_tokens. Generated text differs (expected: different
+sampling implementations, see docs/sampling.md) but prompt_tokens matches exactly (37 both
+ways) -- the same prompt, rendered through the same chat template, tokenizes identically,
+consistent with M1-M3's own tokenizer/chat-template cross-checks.
+
+llama-server adds fields this engine does not emit: system_fingerprint, timings (per-request
+performance numbers), usage.prompt_tokens_details.cached_tokens (prefix-cache accounting this
+engine's server doesn't implement). All are additive: a client reading only the fields the
+OpenAI API documents sees an identical shape either way.
+
+--- Streaming request, both servers, same prompt ---
+
+llama-server's first chunk carries a role-only delta before any content:
+  data: {"choices":[{"finish_reason":null,"index":0,"delta":{"role":"assistant","content":null}}],...}
+then one content-delta chunk per token, then a final chunk with delta:{} and
+finish_reason:"stop", then "data: [DONE]".
+
+llmi-server's first chunk already carries the first content delta (no separate role-only
+priming chunk):
+  data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":...,"model":"llmi",
+         "choices":[{"index":0,"delta":{"content":"Here"},"finish_reason":null}]}
+... one content-delta chunk per token ...
+  data: {"id":"chatcmpl-1",...,"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}
+  data: [DONE]
+
+Everything else matches: one SSE "data: {...}\n\n" event per token, object
+"chat.completion.chunk" throughout, a final chunk with an empty delta object and the real
+finish_reason, and the literal "data: [DONE]\n\n" terminator. The one real difference --
+no leading role-only chunk -- is a known, intentional simplification (see docs/server.md):
+a client that only appends delta.content as it streams in (what every example consumer
+does) sees identical behaviour; a client that specifically reads delta.role from the first
+chunk before any content would need an update this engine doesn't implement yet.

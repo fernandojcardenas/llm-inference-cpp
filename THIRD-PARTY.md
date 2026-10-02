@@ -9,6 +9,7 @@
 | SmolLM2-135M-Instruct `tokenizer_config.json` (chat template only) | `testdata/smollm2-135m-instruct/` (committed) | Apache License 2.0 (model card) | [HuggingFaceTB/SmolLM2-135M-Instruct](https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct), revision `12fd25f7` |
 | Unicode character tables in `src/tokenizer/unicode_tables.inc` | generated from `UnicodeData.txt` 16.0.0 and 17.0.0 | [Unicode License v3](https://www.unicode.org/license.txt) | [unicode.org](https://www.unicode.org/Public/) |
 | GoogleTest 1.17.0 | downloaded at configure time (tests only) | BSD 3-Clause | [google/googletest](https://github.com/google/googletest) |
+| cpp-httplib 0.18.3 | vendored at `third_party/cpp-httplib/httplib.h` (not downloaded at build time) | MIT (`third_party/cpp-httplib/LICENSE`) | [yhirose/cpp-httplib](https://github.com/yhirose/cpp-httplib), tag `v0.18.3` |
 
 Cross-checks use Hugging Face `tokenizers` and `safetensors` (Apache 2.0) and PyTorch (BSD-style) as
 references; none of them is part of the engine.

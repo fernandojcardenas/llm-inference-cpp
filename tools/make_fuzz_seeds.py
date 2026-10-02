@@ -53,7 +53,7 @@ def gguf_file(tensors, metadata=None, alignment=32):
 def main():
     out = pathlib.Path(sys.argv[1])
     root = pathlib.Path(__file__).resolve().parent.parent
-    for d in ("safetensors", "gguf", "json", "config", "tokenizer"):
+    for d in ("safetensors", "gguf", "json", "config", "tokenizer", "server_request"):
         (out / d).mkdir(parents=True, exist_ok=True)
     seeds = {
         "a": {"w": ("F32", [2, 2], struct.pack("<4f", 1, -2, 0.5, 3))},
@@ -84,6 +84,16 @@ def main():
     for i, text in enumerate(["\x01Hello, world! It's 2026.", "\x01<|im_start|>user\nHi<|im_end|>",
                               "\x00naïve café 東京 🙂  \t\n", "\x03a\x04b 123 'll"]):
         (out / "tokenizer" / f"seed-{i}").write_bytes(text.encode())
+
+    server_requests = [
+        '{"model":"llmi","messages":[{"role":"user","content":"Hello"}]}',
+        '{"messages":[{"role":"system","content":"Be terse."},{"role":"user","content":"Hi"}],'
+        '"max_tokens":32,"temperature":0.7,"top_p":0.9,"top_k":40,"stream":true,"stop":["\\n\\n","END"]}',
+        '{"messages":[],"max_tokens":0}',
+        '{"messages":[{"role":"user","content":"x"}],"stop":"END"}',
+    ]
+    for i, text in enumerate(server_requests):
+        (out / "server_request" / f"seed-{i}").write_bytes(text.encode())
 
 
 if __name__ == "__main__":

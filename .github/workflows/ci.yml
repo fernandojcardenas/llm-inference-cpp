@@ -160,7 +160,7 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   fuzz:
-    name: Fuzz (libFuzzer, 5 targets, 60 s each)
+    name: Fuzz (libFuzzer, 6 targets, 60 s each)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -172,7 +172,7 @@ jobs:
           CXX: clang++
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLLMI_BUILD_TESTS=OFF -DLLMI_BUILD_FUZZERS=ON
-          cmake --build build --target fuzz_json fuzz_safetensors fuzz_gguf fuzz_config fuzz_tokenizer
+          cmake --build build --target fuzz_json fuzz_safetensors fuzz_gguf fuzz_config fuzz_tokenizer fuzz_server_request
       - name: Seed inputs
         run: python3 tools/make_fuzz_seeds.py seeds
       - name: Fuzz the JSON parser
@@ -185,3 +185,5 @@ jobs:
         run: mkdir -p c-config && ./build/fuzz_config -max_total_time=60 -max_len=8192 c-config seeds/config
       - name: Fuzz encode and decode with the SmolLM2 tokenizer
         run: mkdir -p c-tok && ./build/fuzz_tokenizer -max_total_time=60 -max_len=4096 c-tok seeds/tokenizer
+      - name: Fuzz the /v1/chat/completions request parser
+        run: mkdir -p c-req && ./build/fuzz_server_request -max_total_time=60 -max_len=8192 c-req seeds/server_request

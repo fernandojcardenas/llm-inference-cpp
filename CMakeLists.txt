@@ -51,8 +51,11 @@ add_library(llmi
   src/model/transformer.cpp
   src/model/sampling.cpp
   src/chat/template.cpp
-  src/tokenizer/tokenizer.cpp)
-target_include_directories(llmi PUBLIC include PRIVATE src/tokenizer)
+  src/tokenizer/tokenizer.cpp
+  src/server/request.cpp
+  src/server/response.cpp
+  src/server/server.cpp)
+target_include_directories(llmi PUBLIC include PRIVATE src/tokenizer third_party/cpp-httplib)
 find_package(Threads REQUIRED)
 target_link_libraries(llmi PRIVATE llmi_warnings PUBLIC Threads::Threads)
 
@@ -70,6 +73,8 @@ add_executable(llmi-chat apps/llmi-chat/main.cpp)
 target_link_libraries(llmi-chat PRIVATE llmi llmi_warnings)
 add_executable(llmi-perplexity apps/llmi-perplexity/main.cpp)
 target_link_libraries(llmi-perplexity PRIVATE llmi llmi_warnings)
+add_executable(llmi-server apps/llmi-server/main.cpp)
+target_link_libraries(llmi-server PRIVATE llmi llmi_warnings)
 
 set(LLMI_TESTDATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/testdata")
 
@@ -94,15 +99,22 @@ if(LLMI_BUILD_TESTS)
     tests/sampling_test.cpp
     tests/chat_template_test.cpp
     tests/thread_pool_test.cpp
-    tests/quant_test.cpp)
+    tests/quant_test.cpp
+    tests/server_request_test.cpp
+    tests/server_response_test.cpp
+    tests/server_integration_test.cpp)
   target_compile_definitions(llmi_tests PRIVATE LLMI_TESTDATA_DIR="${LLMI_TESTDATA_DIR}")
+  # The server integration test drives a real llmi-server over HTTP using
+  # cpp-httplib's own client, the same vendored header the server itself
+  # uses as its transport (see ADR 0008).
+  target_include_directories(llmi_tests PRIVATE third_party/cpp-httplib)
   target_link_libraries(llmi_tests PRIVATE llmi llmi_warnings GTest::gtest_main)
   include(GoogleTest)
   gtest_discover_tests(llmi_tests)
 endif()
 
 if(LLMI_BUILD_FUZZERS)
-  foreach(target fuzz_json fuzz_safetensors fuzz_gguf fuzz_config fuzz_tokenizer)
+  foreach(target fuzz_json fuzz_safetensors fuzz_gguf fuzz_config fuzz_tokenizer fuzz_server_request)
     add_executable(${target} fuzz/${target}.cpp)
     target_compile_options(${target} PRIVATE -fsanitize=fuzzer)
     target_link_options(${target} PRIVATE -fsanitize=fuzzer)

@@ -11,7 +11,7 @@ Target dates assume about eight hours a week.
 | **M4 Performance** | Thread pool, NEON (Apple Silicon) and AVX2 kernels, profiling; prompt and generation speed compared with llama.cpp on the same machine and model | Jan–Feb 2027 | ✅ Done (Oct 2026) |
 | **M5 Quantization** | 8-bit and 4-bit block formats; quality loss measured by perplexity against the full-precision model and llama.cpp; speed and memory table | Mar 2027 | ✅ Done (Oct 2026) |
 | **M6 Hardened GGUF loader** | Read GGUF v3 models with every size and offset checked, fuzzed, with a regression set of malformed files and a threat model for loading untrusted model files | Apr 2027 | ✅ Done (Oct 2026) |
-| **M7 Server** | OpenAI-compatible chat completions API with streaming, request limits, localhost by default, Docker image, load test | May–Jun 2027 | Planned |
+| **M7 Server** | OpenAI-compatible chat completions API with streaming, request limits, localhost by default, Docker image, load test | May–Jun 2027 | ✅ Done (Oct 2026) |
 
 Also planned: Qwen2.5's tokenizer (NFC normalization and its split pattern), so Qwen models run end to end;
 sharded safetensors (`model.safetensors.index.json`) for larger models.
@@ -91,3 +91,30 @@ sharded safetensors (`model.safetensors.index.json`) for larger models.
   ([evidence](evidence/m6-fuzz.txt)). Full threat model: [docs/gguf-threat-model.md](gguf-threat-model.md).
 - Scoped to the loader itself, not wired into `Transformer`/`llmi-generate`/`llmi-chat` yet — see
   [docs/gguf.md](gguf.md) and ADR 0007 for why.
+
+## M7 results
+
+- An OpenAI-compatible `/v1/chat/completions` (streaming via SSE and non-streaming), `/v1/models`
+  and `/health` server (`llmi-server`), transported by cpp-httplib (vendored, MIT — this engine's
+  first third-party dependency) while this engine's own hardened JSON parser still parses every
+  request body, the same trust boundary ADR 0001 drew for every other untrusted input
+  ([ADR 0008](adr/0008-server-transport-and-single-generation-slot.md); [server.md](server.md)).
+- A real architectural constraint, found by reading `llmi::util::ThreadPool`'s own documented
+  contract rather than assumed: `kernels::matmul`'s thread pool cannot be called from more than
+  one thread at a time, so every request's actual generation is serialized behind one mutex.
+  Confirmed by load-testing a running server with real concurrent HTTP clients: mean latency grew
+  3.26x at 4-way concurrency while an 8-way run hit the server's concurrency limit and returned
+  429 for exactly the excess requests, not an approximation of it
+  ([evidence](evidence/m7-loadtest.txt)).
+- Checked against a real reference server: llama.cpp's own `llama-server`, same GGUF file
+  (`smollm2-135m-instruct-f32.gguf`, from M6's own cross-check tooling) both ways. Every field
+  this engine implements matches llama-server's exactly in name, type and nesting, including an
+  exact prompt-token count match through the same chat template; one intentional simplification
+  (no role-only priming chunk before the first streamed content delta) is documented, not hidden
+  ([evidence](evidence/m7-llamacpp-comparison.txt)).
+- A Docker image building just the Release binary, no weights baked in. Building it is not where
+  this milestone's real finding was: binding `127.0.0.1` *inside* the container makes a
+  `-p 127.0.0.1:PORT:PORT`-published port connect and immediately reset, never serve, because
+  Docker's port-publishing reaches a container through its bridge interface, never its loopback —
+  caught by actually running the built image against a real model, not assumed from reading
+  Docker's own documentation (ADR 0008's Consequences; [server.md](server.md)'s Docker section).
