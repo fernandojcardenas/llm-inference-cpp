@@ -1,0 +1,4 @@
+# libFuzzer, 60 s, seeded with tools/make_fuzz_seeds.py, on a 2-core Linux machine. Fuzzer build directory shown as build/. Last two lines of the run. No crash, leak or sanitizer report.
+$ ./build/fuzz_gguf -max_total_time=60 -max_len=4096 c-gguf seeds/gguf
+#242072	DONE   cov: 4090 ft: 14393 corp: 282/48Kb lim: 2895 exec/s: 3968 rss: 118Mb
+Done 242072 runs in 61 second(s)

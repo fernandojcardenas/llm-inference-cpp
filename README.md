@@ -9,9 +9,9 @@ Every stage is checked against the reference implementation (Hugging Face `token
 PyTorch) on real model files, in CI, on every push. Model files are untrusted input, so every parser is
 bounds-checked and fuzzed.
 
-**Status: milestones 1 through 5 of 7 done** (model loading, tokenization, a forward pass that matches PyTorch
-layer by layer, a KV cache, sampling, an interactive chat CLI, a threaded SIMD matmul, and 8-bit/4-bit
-quantization). Next: a hardened GGUF loader. See the [roadmap](docs/roadmap.md).
+**Status: milestones 1 through 6 of 7 done** (model loading, tokenization, a forward pass that matches PyTorch
+layer by layer, a KV cache, sampling, an interactive chat CLI, a threaded SIMD matmul, 8-bit/4-bit
+quantization, and a hardened GGUF loader). Next: a server. See the [roadmap](docs/roadmap.md).
 
 ```
 $ echo "What is the capital of France?" | build/llmi-chat models/smollm2-135m-instruct --max-new 20
@@ -45,6 +45,29 @@ real templates ([details](docs/chat-template.md)).
 
 `build/llmi-chat MODEL_DIR` puts these together: an interactive, multi-turn chat CLI that reuses the KV cache
 across turns.
+
+## Hardened GGUF loader (M6)
+
+`gguf::GGUFFile::parse()`/`open()` (`src/model/gguf.cpp`) is a second, from-scratch reader for
+GGUF v3 — the single-file format llama.cpp and the wider ggml ecosystem use — matching the same
+standard ADR 0001 set for M1's safetensors reader: every count, length, offset and size the file
+claims about itself is checked against configurable limits and the bytes actually remaining
+before it's trusted, with overflow-checked arithmetic throughout. Every one of ggml's 40+ tensor
+type codes is structurally validated; `to_f32`/`to_quantized` convert F32/F16/BF16 and Q8_0/Q4_0
+into plain floats or this engine's own `quant::QuantizedMatrix` (M5). M6 is the loader itself —
+not yet wired into `Transformer`/`llmi-generate`/`llmi-chat` — exercised today through a
+standalone CLI, `llmi-gguf-inspect` ([details](docs/gguf.md)).
+
+Found and fixed a real layout bug along the way: GGUF's Q4_0 packs each block's two *halves*
+into shared bytes, not adjacent element pairs the way this engine's own Q4_0 does — caught by
+cross-checking against real GGUF files from llama.cpp's own converter and quantizer on the same
+two models M1-M5 already use, the same way M5's own scale-sign bug was caught. Checked two
+independent ways against those six real files: structure against the reference `gguf` Python
+package, values against a from-scratch NumPy reimplementation of ggml's block layout — 0
+mismatches across 1,686 tensors ([evidence](docs/evidence/m6-crosscheck.txt)). 20 unit tests
+cover specific malformed-input categories and a 60-second libFuzzer run found zero crashes with
+4090 edges of coverage ([evidence](docs/evidence/m6-fuzz.txt);
+[threat model](docs/gguf-threat-model.md); [ADR 0007](docs/adr/0007-hardened-gguf-loader.md)).
 
 ## Quantization (M5)
 
@@ -158,14 +181,14 @@ Getting to exact agreement found two things the reference does that are easy to 
 
 | Check | What it proves | Where |
 |---|---|---|
-| 89 unit tests (GoogleTest) | UTF-8 edge cases; JSON grammar, escapes, exact 64-bit integers, depth and size limits; every safetensors rejection rule, including shapes that overflow 64 bits; float conversion (F32, F16 incl. subnormals and infinity, BF16); config validation; weight-layout checks; known token ids from the reference; round trips; dropped bytes; every kernel against hand-worked or double-precision values (RoPE scores depend only on relative position); on a small random model of each architecture: causality, determinism, tracing, bad input, stop tokens, and the KV cache reproducing the no-cache baseline; sampling's filtering checked against a plain softmax; the chat template engine's control flow and whitespace handling; the thread pool's chunking (every index covered exactly once, any worker count) and matmul's threaded output bit-for-bit against a row-by-row reference; Q8_0/Q4_0 round-trip error bounds (including the exact-reconstruction case for a block's extreme value) and quantized matmul against a dequantize-then-dot reference; a quantized whole-model forward pass staying close to float32 and picking the same argmax | `tests/` |
+| 109 unit tests (GoogleTest) | UTF-8 edge cases; JSON grammar, escapes, exact 64-bit integers, depth and size limits; every safetensors rejection rule, including shapes that overflow 64 bits; float conversion (F32, F16 incl. subnormals and infinity, BF16); config validation; weight-layout checks; known token ids from the reference; round trips; dropped bytes; every kernel against hand-worked or double-precision values (RoPE scores depend only on relative position); on a small random model of each architecture: causality, determinism, tracing, bad input, stop tokens, and the KV cache reproducing the no-cache baseline; sampling's filtering checked against a plain softmax; the chat template engine's control flow and whitespace handling; the thread pool's chunking (every index covered exactly once, any worker count) and matmul's threaded output bit-for-bit against a row-by-row reference; Q8_0/Q4_0 round-trip error bounds (including the exact-reconstruction case for a block's extreme value) and quantized matmul against a dequantize-then-dot reference; a quantized whole-model forward pass staying close to float32 and picking the same argmax; every GGUF rejection rule (truncation at every header stage, overflow, nested arrays, bad alignment, overlapping tensors, duplicate keys/names) and its Q8_0/Q4_0 conversion, including the hand-computed Q4_0 half-block-pairing case | `tests/` |
 | Forward-pass cross-check | Every layer within 1e-4 of PyTorch and greedy tokens identical, on two architectures | `tools/crosscheck_forward.py`, CI `forward` job |
 | Tokenizer cross-check | Identical token ids to Hugging Face on 4.5 million inputs | `tools/crosscheck_tokenizer.py`, CI `crosscheck` job |
 | Weight cross-check | Every tensor of two models read exactly as PyTorch reads it | `tools/crosscheck_weights.py`, CI `crosscheck` job |
 | Chat template cross-check | Identical prompts to `transformers`' own Jinja compiler, 9 cases on two real templates | `tools/crosscheck_chat_template.py`, CI `crosscheck` job |
 | ASan + UBSan | No memory errors or undefined behaviour, with GCC and Clang | CI `test` job |
 | macOS arm64 | Builds and passes with Apple Clang, the target laptop platform | CI `macos` job |
-| Four libFuzzer targets | Arbitrary bytes into the JSON parser, the safetensors parser (output must tile the input exactly), the config and tokenizer loaders, and encode/decode (valid UTF-8 must round-trip) | `fuzz/`, CI `fuzz` job |
+| Five libFuzzer targets | Arbitrary bytes into the JSON parser, the safetensors parser (output must tile the input exactly), the GGUF parser (offsets/sizes stay in bounds, alignment stays a power of two, no array-of-arrays accepted), the config and tokenizer loaders, and encode/decode (valid UTF-8 must round-trip) | `fuzz/`, CI `fuzz` job |
 | clang-tidy | bugprone, cert, performance, modernize and readability checks, warnings as errors | `.clang-tidy`, CI `lint` job |
 
 ## Build
@@ -218,14 +241,15 @@ see the commands at the top of each file in `docs/evidence/`.
 ## Layout
 
 ```
-include/llmi/   public headers: util/ (JSON, UTF-8, Result, thread pool), model/ (safetensors, config, kernels, quant, weight, transformer, sampling), tokenizer/, chat/ (template)
+include/llmi/   public headers: util/ (JSON, UTF-8, Result, thread pool), model/ (safetensors, gguf, config, kernels, quant, weight, transformer, sampling), tokenizer/, chat/ (template)
 src/            implementation; src/tokenizer/unicode_tables.inc is generated from the Unicode database
-apps/           llmi-inspect, llmi-tokenize, llmi-generate, llmi-chat, llmi-chat-template, llmi-perplexity
+apps/           llmi-inspect, llmi-gguf-inspect, llmi-tokenize, llmi-generate, llmi-chat, llmi-chat-template, llmi-perplexity
 tests/          unit tests
 fuzz/           libFuzzer targets
 tools/          model download, cross-checks, Unicode table generator and probe, fuzz seeds, matmul microbenchmark, perplexity-eval token ids
 testdata/       tokenizer.json/config.json/tokenizer_config.json for the three models (Apache 2.0)
-docs/           roadmap, tokenizer, forward-pass, KV cache, sampling and chat-template notes, architecture
+docs/           roadmap, tokenizer, forward-pass, KV cache, sampling, chat-template, quantization and GGUF
+                notes, a GGUF threat model, architecture
                 decisions, evidence from real runs
 ```
 

@@ -10,7 +10,7 @@ Target dates assume about eight hours a week.
 | **M3 KV cache, sampling, chat** | Key/value cache with a measured speed-up; temperature, top-k and top-p sampling, reproducible from a seed; chat templates and a chat CLI | Dec 2026 | ✅ Done (Oct 2026) |
 | **M4 Performance** | Thread pool, NEON (Apple Silicon) and AVX2 kernels, profiling; prompt and generation speed compared with llama.cpp on the same machine and model | Jan–Feb 2027 | ✅ Done (Oct 2026) |
 | **M5 Quantization** | 8-bit and 4-bit block formats; quality loss measured by perplexity against the full-precision model and llama.cpp; speed and memory table | Mar 2027 | ✅ Done (Oct 2026) |
-| **M6 Hardened GGUF loader** | Read GGUF v3 models with every size and offset checked, fuzzed, with a regression set of malformed files and a threat model for loading untrusted model files | Apr 2027 | Planned |
+| **M6 Hardened GGUF loader** | Read GGUF v3 models with every size and offset checked, fuzzed, with a regression set of malformed files and a threat model for loading untrusted model files | Apr 2027 | ✅ Done (Oct 2026) |
 | **M7 Server** | OpenAI-compatible chat completions API with streaming, request limits, localhost by default, Docker image, load test | May–Jun 2027 | Planned |
 
 Also planned: Qwen2.5's tokenizer (NFC normalization and its split pattern), so Qwen models run end to end;
@@ -68,3 +68,26 @@ sharded safetensors (`model.safetensors.index.json`) for larger models.
   3.56x/6.40x less memory but run 1.9–3.4x **slower**, because the quantized matmul has no SIMD path yet —
   the opposite of llama.cpp, whose Q8_0/Q4_0 are 4–8x **faster** than its own f32 thanks to hand-written
   SIMD kernels that operate directly on packed weights ([evidence](evidence/m5-speed-and-memory.txt)).
+
+## M6 results
+
+- A from-scratch, hardened GGUF v3 reader (`src/model/gguf.cpp`) — every count, length, offset and size
+  the file claims is checked against both configurable limits and the bytes actually remaining before it's
+  trusted, with overflow-checked arithmetic throughout, matching the standard ADR 0001 set for M1's
+  safetensors reader. Every ggml tensor type (40+ codes) is structurally validated; F32/F16/BF16 convert
+  to plain floats and Q8_0/Q4_0 convert to this engine's own `quant::QuantizedMatrix` (M5).
+- Found and fixed a real layout bug: GGUF's Q4_0 packs each block's two *halves* into shared bytes, not
+  adjacent element pairs the way this engine's own Q4_0 does — caught by cross-checking against real GGUF
+  files from llama.cpp's own converter, the same way M5's scale-sign bug was caught, not by inspection
+  alone ([ADR 0007](adr/0007-hardened-gguf-loader.md)).
+- Checked twice against reality: a hand-crafted unit test with manually computed expected values, and a
+  full cross-check against six real GGUF files (two models, three precisions each) read two independent
+  ways — structure against the reference `gguf` Python package, values against a from-scratch NumPy
+  reimplementation of ggml's block layout. 272/272/272/290/290/290 tensors, **0 mismatches**
+  ([evidence](evidence/m6-crosscheck.txt)).
+- 20 unit tests covering specific malformed-input categories (truncation at every header stage, overflow,
+  nested arrays, bad alignment, overlapping tensors, duplicate keys/names, and more — the regression set
+  this milestone calls for), plus a 60-second libFuzzer run with zero crashes and 4090 edges of coverage
+  ([evidence](evidence/m6-fuzz.txt)). Full threat model: [docs/gguf-threat-model.md](gguf-threat-model.md).
+- Scoped to the loader itself, not wired into `Transformer`/`llmi-generate`/`llmi-chat` yet — see
+  [docs/gguf.md](gguf.md) and ADR 0007 for why.

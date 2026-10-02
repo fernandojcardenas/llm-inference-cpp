@@ -43,6 +43,7 @@ add_library(llmi
   src/util/json.cpp
   src/util/thread_pool.cpp
   src/model/safetensors.cpp
+  src/model/gguf.cpp
   src/model/model.cpp
   src/model/kernels.cpp
   src/model/quant.cpp
@@ -57,6 +58,8 @@ target_link_libraries(llmi PRIVATE llmi_warnings PUBLIC Threads::Threads)
 
 add_executable(llmi-inspect apps/llmi-inspect/main.cpp)
 target_link_libraries(llmi-inspect PRIVATE llmi llmi_warnings)
+add_executable(llmi-gguf-inspect apps/llmi-gguf-inspect/main.cpp)
+target_link_libraries(llmi-gguf-inspect PRIVATE llmi llmi_warnings)
 add_executable(llmi-tokenize apps/llmi-tokenize/main.cpp)
 target_link_libraries(llmi-tokenize PRIVATE llmi llmi_warnings)
 add_executable(llmi-generate apps/llmi-generate/main.cpp)
@@ -84,6 +87,7 @@ if(LLMI_BUILD_TESTS)
     tests/utf8_test.cpp
     tests/json_test.cpp
     tests/safetensors_test.cpp
+    tests/gguf_test.cpp
     tests/model_test.cpp
     tests/tokenizer_test.cpp
     tests/transformer_test.cpp
@@ -98,7 +102,7 @@ if(LLMI_BUILD_TESTS)
 endif()
 
 if(LLMI_BUILD_FUZZERS)
-  foreach(target fuzz_json fuzz_safetensors fuzz_config fuzz_tokenizer)
+  foreach(target fuzz_json fuzz_safetensors fuzz_gguf fuzz_config fuzz_tokenizer)
     add_executable(${target} fuzz/${target}.cpp)
     target_compile_options(${target} PRIVATE -fsanitize=fuzzer)
     target_link_options(${target} PRIVATE -fsanitize=fuzzer)

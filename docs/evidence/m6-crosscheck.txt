@@ -1,0 +1,30 @@
+# Real GGUF files produced by llama.cpp's own converter (convert_hf_to_gguf.py)
+# and llama-quantize, from the exact same SmolLM2-135M-Instruct and
+# Qwen2.5-0.5B-Instruct weights M1-M5 already use (models/<name> in M1's own
+# evidence; shown here as the standalone .gguf files llama.cpp wrote). Checked
+# with tools/crosscheck_gguf.py against the reference `gguf` Python package
+# (pip install gguf, published by ggml-org) for structure, and against a
+# from-scratch NumPy re-implementation of ggml's own block layout (not a
+# single line shared with src/model/gguf.cpp) for every tensor's actual
+# values -- F32 bit-exact, Q8_0/Q4_0 dequantized and compared element-for-
+# element. This is what caught -- on real model weights, not only the
+# hand-built unit test -- that a naive port of this engine's own Q4_0 layout
+# (quant.cpp, M5) does not match GGUF's real byte-for-byte layout; see the
+# long comment in src/model/gguf.cpp and ADR 0007.
+
+$ python3 tools/crosscheck_gguf.py build-perf \
+    smollm2-135m-instruct-f32.gguf smollm2-135m-instruct-q8_0.gguf smollm2-135m-instruct-q4_0.gguf \
+    qwen2.5-0.5b-instruct-f32.gguf qwen2.5-0.5b-instruct-q8_0.gguf qwen2.5-0.5b-instruct-q4_0.gguf
+== smollm2-135m-instruct-f32.gguf ==
+  272 tensors, structure OK; 272 tensors' values matched an independent NumPy decode exactly (0 mismatches)
+== smollm2-135m-instruct-q8_0.gguf ==
+  272 tensors, structure OK; 272 tensors' values matched an independent NumPy decode exactly (0 mismatches)
+== smollm2-135m-instruct-q4_0.gguf ==
+  272 tensors, structure OK; 272 tensors' values matched an independent NumPy decode exactly (0 mismatches)
+== qwen2.5-0.5b-instruct-f32.gguf ==
+  290 tensors, structure OK; 290 tensors' values matched an independent NumPy decode exactly (0 mismatches)
+== qwen2.5-0.5b-instruct-q8_0.gguf ==
+  290 tensors, structure OK; 290 tensors' values matched an independent NumPy decode exactly (0 mismatches)
+== qwen2.5-0.5b-instruct-q4_0.gguf ==
+  290 tensors, structure OK; 290 tensors' values matched an independent NumPy decode exactly (0 mismatches)
+All files matched.
