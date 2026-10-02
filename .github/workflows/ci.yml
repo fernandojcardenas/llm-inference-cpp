@@ -160,7 +160,7 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   fuzz:
-    name: Fuzz (libFuzzer, 4 targets, 60 s each)
+    name: Fuzz (libFuzzer, 5 targets, 60 s each)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -172,13 +172,15 @@ jobs:
           CXX: clang++
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLLMI_BUILD_TESTS=OFF -DLLMI_BUILD_FUZZERS=ON
-          cmake --build build --target fuzz_json fuzz_safetensors fuzz_config fuzz_tokenizer
+          cmake --build build --target fuzz_json fuzz_safetensors fuzz_gguf fuzz_config fuzz_tokenizer
       - name: Seed inputs
         run: python3 tools/make_fuzz_seeds.py seeds
       - name: Fuzz the JSON parser
         run: mkdir -p c-json && ./build/fuzz_json -max_total_time=60 -max_len=4096 c-json seeds/json
       - name: Fuzz the safetensors parser
         run: mkdir -p c-st && ./build/fuzz_safetensors -max_total_time=60 -max_len=4096 c-st seeds/safetensors
+      - name: Fuzz the GGUF parser
+        run: mkdir -p c-gguf && ./build/fuzz_gguf -max_total_time=60 -max_len=4096 c-gguf seeds/gguf
       - name: Fuzz the config.json and tokenizer.json loaders
         run: mkdir -p c-config && ./build/fuzz_config -max_total_time=60 -max_len=8192 c-config seeds/config
       - name: Fuzz encode and decode with the SmolLM2 tokenizer
