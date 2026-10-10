@@ -1,6 +1,7 @@
 # Roadmap
 
-Seven milestones, each finished only when its results are checked against a reference and reproduced in CI.
+Eight milestones; the first seven are done. Each is finished only when its results are checked against a reference
+and reproduced in CI.
 Target dates assume about eight hours a week.
 
 | Milestone | What "done" means | Target | Status |
@@ -12,6 +13,7 @@ Target dates assume about eight hours a week.
 | **M5 Quantization** | 8-bit and 4-bit block formats; quality loss measured by perplexity against the full-precision model and llama.cpp; speed and memory table | Mar 2027 | ✅ Done (Oct 2026) |
 | **M6 Hardened GGUF loader** | Read GGUF v3 models with every size and offset checked, fuzzed, with a regression set of malformed files and a threat model for loading untrusted model files | Apr 2027 | ✅ Done (Oct 2026) |
 | **M7 Server** | OpenAI-compatible chat completions API with streaming, request limits, localhost by default, Docker image, load test | May–Jun 2027 | ✅ Done (Oct 2026) |
+| **M8 Constrained decoding and performance study** | Generation constrained to a grammar or JSON schema, with tests that every constrained output parses; a measured performance study on Apple Silicon: tokenizer throughput, Q8_0/Q4_0 against higher precision, a memory-bandwidth roofline and KV-cache layout | Apr–May 2027 | Planned |
 
 Also planned: Qwen2.5's tokenizer (NFC normalization and its split pattern), so Qwen models run end to end;
 sharded safetensors (`model.safetensors.index.json`) for larger models.

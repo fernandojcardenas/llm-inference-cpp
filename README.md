@@ -9,10 +9,10 @@ Every stage is checked against the reference implementation (Hugging Face `token
 PyTorch) on real model files, in CI, on every push. Model files are untrusted input, so every parser is
 bounds-checked and fuzzed.
 
-**Status: all 7 milestones done** (model loading, tokenization, a forward pass that matches PyTorch
+**Status: M1–M7 done** (model loading, tokenization, a forward pass that matches PyTorch
 layer by layer, a KV cache, sampling, an interactive chat CLI, a threaded SIMD matmul, 8-bit/4-bit
-quantization, a hardened GGUF loader, and an OpenAI-compatible chat completions server). See the
-[roadmap](docs/roadmap.md).
+quantization, a hardened GGUF loader, and an OpenAI-compatible chat completions server). Next is M8,
+constrained decoding and a performance study, planned for 2027. See the [roadmap](docs/roadmap.md).
 
 ```
 $ echo "What is the capital of France?" | build/llmi-chat models/smollm2-135m-instruct --max-new 20
