@@ -1,0 +1,25 @@
+$ python3 tools/eval_constrained_json.py build-perf models/smollm2-135m-instruct --seeds 5
+model: smollm2-135m-instruct; schemas: 5; prompts per schema: 2; sampled seeds: 5
+  unconstrained, greedy         10 outputs: JSON, wrong shape 1, not JSON 9
+  constrained, greedy           10 outputs: valid 10
+  constrained, T=0.8            50 outputs: valid 50
+  sampled runs: 2165 full vocabulary checks, 8.49 ms each on average, 20218 trie nodes visited each on average
+
+examples (first prompt of each schema):
+  [person / unconstrained, greedy / not JSON] "{\n  \"name\": \"Maria Lopez\",\n  \"age\": 34,\n  \"city\": \"Detroit\",\n  \"location\": \"Detroit\",\n  \"address\": {\n    \"street\": \"123 Main St\",\n  
+  [person / constrained, greedy / valid] "{\n  \"name\": \"Maria Lopez\",\n  \"age\": 34,\n  \"city\": \"Detroit\"\n}"
+  [person / constrained, T=0.8 seed 1 / valid] "{\n    \"name\": \"Maria Lopez\",\n    \"age\": 34,\n    \"city\": \"Detroit\"\n}"
+  [maintenance / unconstrained, greedy / not JSON] "{\n  \"type\": \"json\",\n  \"data\": {\n    \"type\": \"json\",\n    \"data\": {\n      \"type\": \"json\",\n      \"data\": {\n        \"type\": \"json\",\n 
+  [maintenance / constrained, greedy / valid] "{\n  \"vehicle\": \"Truck 12\",\n  \"mileage\": 84000,\n  \"status\": \"service_due\",\n  \"parts\": [\n    \"Truck 12\",\n    \"service_due\",\n    \"oil_chan
+  [maintenance / constrained, T=0.8 seed 1 / valid] "{\n    \"vehicle\": \"Truck 12\",\n    \"mileage\": 84000,\n    \"status\":  \"service_due\",\n    \"parts\": [\n        \"Licensed Driver\",\n        \"Engine
+  [yes-no / unconstrained, greedy / not JSON] "{\n  \"type\": \"json\",\n  \"data\": {\n    \"type\": \"json\",\n    \"data\": {\n      \"type\": \"json\",\n      \"data\": {\n        \"type\": \"json\",\n 
+  [yes-no / constrained, greedy / valid] "{\n  \"answer\": \ntrue,\n\"confidence\": 0.99\n}"
+  [yes-no / constrained, T=0.8 seed 1 / valid] "{\n  \"answer\": \ntrue,\n\"confidence\": 0.5\n}"
+  [shopping list / unconstrained, greedy / not JSON] "```json\n{\n  \"name\": \"Pancakes\",\n  \"price\": 1.99,\n  \"quantity\": 2,\n  \"cooking_time\": \"10:00\",\n  \"cooking_temperature\": \"200\u00b0F\",\n  \"
+  [shopping list / constrained, greedy / valid] "{\n    \"items\": [\n        {\n            \"name\": \"Pancakes\",\n            \"qty\": 2\n        },\n        {\n            \"name\": \"Eggs\",\n          
+  [shopping list / constrained, T=0.8 seed 1 / valid] "{\n    \"items\": [\n        {\n            \"name\": \"en_US\",\n            \"qty\": 1000\n        },\n        {\n            \"name\": \"en_US\",\n         
+  [optional field / unconstrained, greedy / JSON, wrong shape] "{\n  \"title\": \"Moby-Dick\",\n  \"year\": 1843,\n  \"authors\": [\n    {\n      \"title\": \"Samuel Clemens\",\n      \"author\": \"Mark Twain\",\n      \"ye
+  [optional field / constrained, greedy / valid] "{\n  \"title\": \"Moby-Dick\",\n  \"year\": 1843\n}"
+  [optional field / constrained, T=0.8 seed 1 / valid] "{\n    \"title\": \"Moby-Dick\",\n    \"year\": 1839\n}"
+
+ALL CONSTRAINED OUTPUTS VALID

@@ -159,8 +159,50 @@ jobs:
             | grep -v 'Loading weights' | tee -a "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
+  grammar:
+    name: Constrained decoding (independent recognizer, schema validation on a real model)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install the independent JSON Schema validator
+        run: pip install jsonschema==4.26.0
+      - name: Build the tools
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DLLMI_BUILD_TESTS=OFF
+          cmake --build build --target llmi-grammar llmi-generate -j 4
+      # Every enumerated string must get the same verdict (complete / viable
+      # prefix / rejected) from the engine's matcher and from an Earley parser
+      # written separately in Python; the script exits non-zero on any
+      # disagreement.
+      - name: Grammar matcher vs an independent Earley recognizer
+        run: |
+          set -o pipefail
+          echo '### Grammar cross-check' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          python3 tools/crosscheck_grammar.py build | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/cache@v6
+        with:
+          path: models
+          key: models-smollm2-135m-instruct-12fd25f7
+      - name: Fetch SmolLM2-135M-Instruct (pinned revision and SHA-256)
+        run: tools/fetch_model.sh smollm2-135m-instruct models/smollm2-135m-instruct
+      # Fails if any constrained output is not valid JSON matching its schema,
+      # as judged by the jsonschema package rather than the engine itself.
+      - name: Constrained JSON on SmolLM2-135M-Instruct, validated with jsonschema
+        run: |
+          set -o pipefail
+          echo '### Constrained JSON (SmolLM2-135M-Instruct)' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          python3 tools/eval_constrained_json.py build models/smollm2-135m-instruct --seeds 2 \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
   fuzz:
-    name: Fuzz (libFuzzer, 6 targets, 60 s each)
+    name: Fuzz (libFuzzer, 7 targets, 60 s each)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -172,7 +214,7 @@ jobs:
           CXX: clang++
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLLMI_BUILD_TESTS=OFF -DLLMI_BUILD_FUZZERS=ON
-          cmake --build build --target fuzz_json fuzz_safetensors fuzz_gguf fuzz_config fuzz_tokenizer fuzz_server_request
+          cmake --build build --target fuzz_json fuzz_safetensors fuzz_gguf fuzz_config fuzz_tokenizer fuzz_server_request fuzz_grammar
       - name: Seed inputs
         run: python3 tools/make_fuzz_seeds.py seeds
       - name: Fuzz the JSON parser
@@ -187,3 +229,5 @@ jobs:
         run: mkdir -p c-tok && ./build/fuzz_tokenizer -max_total_time=60 -max_len=4096 c-tok seeds/tokenizer
       - name: Fuzz the /v1/chat/completions request parser
         run: mkdir -p c-req && ./build/fuzz_server_request -max_total_time=60 -max_len=8192 c-req seeds/server_request
+      - name: Fuzz the grammar parser, matcher and JSON Schema converter
+        run: mkdir -p c-grammar && ./build/fuzz_grammar -max_total_time=60 -max_len=4096 c-grammar seeds/grammar

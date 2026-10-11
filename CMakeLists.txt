@@ -50,6 +50,10 @@ add_library(llmi
   src/model/weight.cpp
   src/model/transformer.cpp
   src/model/sampling.cpp
+  src/grammar/grammar.cpp
+  src/grammar/matcher.cpp
+  src/grammar/json_schema.cpp
+  src/grammar/constraint.cpp
   src/chat/template.cpp
   src/tokenizer/tokenizer.cpp
   src/server/request.cpp
@@ -65,6 +69,8 @@ add_executable(llmi-gguf-inspect apps/llmi-gguf-inspect/main.cpp)
 target_link_libraries(llmi-gguf-inspect PRIVATE llmi llmi_warnings)
 add_executable(llmi-tokenize apps/llmi-tokenize/main.cpp)
 target_link_libraries(llmi-tokenize PRIVATE llmi llmi_warnings)
+add_executable(llmi-grammar apps/llmi-grammar/main.cpp)
+target_link_libraries(llmi-grammar PRIVATE llmi llmi_warnings)
 add_executable(llmi-generate apps/llmi-generate/main.cpp)
 target_link_libraries(llmi-generate PRIVATE llmi llmi_warnings)
 add_executable(llmi-chat-template apps/llmi-chat-template/main.cpp)
@@ -97,6 +103,8 @@ if(LLMI_BUILD_TESTS)
     tests/tokenizer_test.cpp
     tests/transformer_test.cpp
     tests/sampling_test.cpp
+    tests/grammar_test.cpp
+    tests/json_schema_test.cpp
     tests/chat_template_test.cpp
     tests/thread_pool_test.cpp
     tests/quant_test.cpp
@@ -114,7 +122,7 @@ if(LLMI_BUILD_TESTS)
 endif()
 
 if(LLMI_BUILD_FUZZERS)
-  foreach(target fuzz_json fuzz_safetensors fuzz_gguf fuzz_config fuzz_tokenizer fuzz_server_request)
+  foreach(target fuzz_json fuzz_safetensors fuzz_gguf fuzz_config fuzz_tokenizer fuzz_server_request fuzz_grammar)
     add_executable(${target} fuzz/${target}.cpp)
     target_compile_options(${target} PRIVATE -fsanitize=fuzzer)
     target_link_options(${target} PRIVATE -fsanitize=fuzzer)

@@ -1,5 +1,6 @@
 #include "llmi/server/request.hpp"
 
+#include "llmi/grammar/json_schema.hpp"
 #include "llmi/util/json.hpp"
 
 namespace llmi::server {
@@ -97,6 +98,37 @@ Result<ChatCompletionRequest> parse_chat_completion_request(std::string_view bod
       }
     } else {
       return fail(R"("stop" must be a string or an array of strings)");
+    }
+  }
+
+  if (const json::Value* rf = root.find("response_format"); rf != nullptr) {
+    if (!rf->is_object()) return fail(R"("response_format" must be an object)");
+    const json::Value* type = rf->find("type");
+    if (type == nullptr || !type->is_string()) return fail(R"("response_format" needs a string "type")");
+    std::string gbnf;
+    if (type->text() == "json_object") {
+      gbnf = grammar::json_object_grammar();
+    } else if (type->text() == "json_schema") {
+      const json::Value* js = rf->find("json_schema");
+      if (js == nullptr || !js->is_object()) return fail(R"("response_format.json_schema" must be an object)");
+      const json::Value* name = js->find("name");
+      if (name == nullptr || !name->is_string() || name->text().empty()) {
+        return fail(R"("response_format.json_schema.name" must be a non-empty string)");
+      }
+      const json::Value* strict = js->find("strict");
+      if (strict != nullptr && !strict->is_bool()) return fail(R"("response_format.json_schema.strict" must be a boolean)");
+      const json::Value* schema = js->find("schema");
+      if (schema == nullptr) return fail(R"("response_format.json_schema.schema" is required)");
+      auto converted = grammar::json_schema_to_gbnf(*schema);
+      if (!converted) return fail(converted.error());
+      gbnf = std::move(converted.value());
+    } else if (type->text() != "text") {
+      return fail(R"("response_format.type" must be "text", "json_object" or "json_schema")");
+    }
+    if (!gbnf.empty()) {
+      auto g = grammar::Grammar::parse(gbnf);
+      if (!g) return fail("response_format: " + g.error());
+      req.grammar = std::make_shared<const grammar::Grammar>(std::move(g.value()));
     }
   }
 

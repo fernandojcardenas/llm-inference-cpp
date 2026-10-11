@@ -1,0 +1,62 @@
+Planted-bug check for tools/crosscheck_grammar.py (M8). Each bug is planted in a scratch copy of
+the sources (never the repo), llmi-grammar is rebuilt, and the cross-check's first six grammars are run.
+A cross-check that cannot tell these builds from the real one would be worthless.
+
+== Bug 1: {m,n} desugaring builds one optional copy too few (src/grammar/grammar.cpp)
+   sed 's/k <= max - min; ++k/k < max - min; ++k/'
+PASS alternatives and classes: 141 strings (complete 10, prefix 4, rejected 127), 0 disagreements
+PASS balanced parentheses: 1941 strings (complete 289, prefix 822, rejected 830), 0 disagreements
+FAIL counted repetition: 882 strings (complete 357, prefix 47, rejected 478), 95 disagreements
+    'aaaa': reference P, engine -
+    'aaaab': reference P, engine -
+    'aaaabb': reference P, engine -
+    'aaaabbb': reference P, engine -
+    'aaaabbbc': reference C, engine -
+    'aaaabbbcc': reference C, engine -
+    'aaaabbbccc': reference C, engine -
+    'aaaabbbc': reference C, engine -
+    'aaaabbbc': reference C, engine -
+    'aaaabbbc': reference C, engine -
+PASS negated classes and any: 731 strings (complete 240, prefix 256, rejected 235), 0 disagreements
+PASS ambiguous splits: 127 strings (complete 96, prefix 0, rejected 31), 0 disagreements
+FAIL nested groups: 1924 strings (complete 1091, prefix 7, rejected 826), 519 disagreements
+    'ddd': reference C, engine -
+    'ddde': reference C, engine -
+    'dda': reference C, engine -
+    'ddae': reference C, engine -
+    'ddac': reference C, engine -
+    'ddace': reference C, engine -
+    'ddacc': reference C, engine -
+    'ddacce': reference C, engine -
+    'ddaccc': reference C, engine -
+    'ddaccb': reference C, engine -
+
+== Bug 2: a rule reference drops what follows it when it is second-to-last (src/grammar/matcher.cpp normalize)
+   'if (top.idx + 1 < seq.size())' -> 'if (top.idx + 2 < seq.size())'
+PASS alternatives and classes: 141 strings (complete 10, prefix 4, rejected 127), 0 disagreements
+PASS balanced parentheses: 1941 strings (complete 289, prefix 822, rejected 830), 0 disagreements
+PASS counted repetition: 882 strings (complete 357, prefix 47, rejected 478), 0 disagreements
+PASS negated classes and any: 731 strings (complete 240, prefix 256, rejected 235), 0 disagreements
+FAIL ambiguous splits: 127 strings (complete 96, prefix 0, rejected 31), 35 disagreements
+    'aaaa': reference C, engine -
+    'aaaaa': reference C, engine -
+    'aaaaaa': reference C, engine -
+    'aaaaaaa': reference C, engine -
+    'aaaaaaaa': reference C, engine -
+    'aaaaaaaaa': reference C, engine -
+    'aaaaaaaaaa': reference C, engine -
+    'aaaaaaaaaaa': reference C, engine -
+    'aaaaaaaaaaaa': reference C, engine -
+    'aaaaaa': reference C, engine -
+FAIL nested groups: 1924 strings (complete 1091, prefix 7, rejected 826), 1012 disagreements
+    'de': reference C, engine -
+    'dde': reference C, engine -
+    'ddd': reference C, engine -
+    'ddde': reference C, engine -
+    'dda': reference C, engine -
+    'ddae': reference C, engine -
+    'ddac': reference C, engine -
+    'ddace': reference C, engine -
+    'ddacc': reference C, engine -
+    'ddacce': reference C, engine -
+

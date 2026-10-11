@@ -1,11 +1,13 @@
 #pragma once
 
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "llmi/chat/template.hpp"
+#include "llmi/grammar/grammar.hpp"
 #include "llmi/model/sampling.hpp"
 #include "llmi/util/result.hpp"
 
@@ -35,6 +37,9 @@ struct ChatCompletionRequest {
   SamplingConfig sampling;
   bool stream = false;
   std::vector<std::string> stop;
+  // Set when "response_format" asks for JSON (M8, ADR 0009): the output is
+  // constrained to this grammar. Null for plain text.
+  std::shared_ptr<const grammar::Grammar> grammar;
 };
 
 // Parses `body` as JSON (via llmi::json::parse, the same hardened parser M1
@@ -47,7 +52,10 @@ struct ChatCompletionRequest {
 // not a non-negative integer, or exceeds max_tokens_ceiling (absent ->
 // default_max_tokens, never unbounded); "temperature" or "top_p" outside
 // [0, 2] and [0, 1] respectively; "stop" that is neither a string nor an
-// array of strings, or has more entries than max_stop_sequences.
+// array of strings, or has more entries than max_stop_sequences;
+// "response_format" that is not {"type": "text"}, {"type": "json_object"} or
+// {"type": "json_schema", "json_schema": {"name": ..., "schema": {...}}}, or
+// whose schema is outside the supported strict subset (json_schema.hpp).
 Result<ChatCompletionRequest> parse_chat_completion_request(std::string_view body, const RequestLimits& limits);
 
 }  // namespace llmi::server

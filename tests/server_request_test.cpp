@@ -110,3 +110,35 @@ TEST(ServerRequest, IgnoresUnknownFields) {
       R"({"messages":[{"role":"user","content":"x"}],"n":3,"logprobs":true,"user":"abc"})", default_limits());
   EXPECT_TRUE(r) << r.error();
 }
+
+TEST(ServerRequest, ResponseFormatCompilesAGrammar) {
+  const RequestLimits limits;
+  auto text = parse_chat_completion_request(
+      R"({"messages":[{"role":"user","content":"x"}],"response_format":{"type":"text"}})", limits);
+  ASSERT_TRUE(text) << text.error();
+  EXPECT_EQ(text->grammar, nullptr);
+  auto obj = parse_chat_completion_request(
+      R"({"messages":[{"role":"user","content":"x"}],"response_format":{"type":"json_object"}})", limits);
+  ASSERT_TRUE(obj) << obj.error();
+  EXPECT_NE(obj->grammar, nullptr);
+  auto schema = parse_chat_completion_request(
+      R"({"messages":[{"role":"user","content":"x"}],"response_format":{"type":"json_schema","json_schema":
+          {"name":"a","strict":true,"schema":{"type":"boolean"}}}})",
+      limits);
+  ASSERT_TRUE(schema) << schema.error();
+  EXPECT_NE(schema->grammar, nullptr);
+}
+
+TEST(ServerRequest, RejectsMalformedResponseFormats) {
+  const RequestLimits limits;
+  const char* bad[] = {
+      R"({"messages":[{"role":"user","content":"x"}],"response_format":"json"})",
+      R"({"messages":[{"role":"user","content":"x"}],"response_format":{"type":"xml"}})",
+      R"({"messages":[{"role":"user","content":"x"}],"response_format":{"type":"json_schema"}})",
+      R"({"messages":[{"role":"user","content":"x"}],"response_format":{"type":"json_schema","json_schema":{"schema":{"type":"string"}}}})",
+      R"({"messages":[{"role":"user","content":"x"}],"response_format":{"type":"json_schema","json_schema":{"name":"a"}}})",
+      R"({"messages":[{"role":"user","content":"x"}],"response_format":{"type":"json_schema","json_schema":{"name":"a","strict":1,"schema":{"type":"string"}}}})",
+      R"({"messages":[{"role":"user","content":"x"}],"response_format":{"type":"json_schema","json_schema":{"name":"a","schema":{"type":"string","format":"email"}}}})",
+  };
+  for (const char* body : bad) EXPECT_FALSE(parse_chat_completion_request(body, limits)) << body;
+}

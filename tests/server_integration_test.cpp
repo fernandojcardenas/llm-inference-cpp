@@ -70,13 +70,14 @@ std::string tiny_tokenizer_json() {
 
 // A tiny random-weight Llama-shaped model whose vocab_size matches the
 // tokenizer above exactly, so every sampled token id decodes to something.
-Transformer make_tiny_transformer() {
-  const char* kCfg = R"({
+Transformer make_tiny_transformer(int max_positions = 64) {
+  const std::string cfg_text = R"({
     "architectures": ["LlamaForCausalLM"], "vocab_size": 258, "hidden_size": 16, "intermediate_size": 24,
-    "num_hidden_layers": 1, "num_attention_heads": 4, "num_key_value_heads": 2, "max_position_embeddings": 64,
+    "num_hidden_layers": 1, "num_attention_heads": 4, "num_key_value_heads": 2, "max_position_embeddings": )" +
+                               std::to_string(max_positions) + R"(,
     "rms_norm_eps": 1e-6, "rope_theta": 10000.0, "tie_word_embeddings": true, "eos_token_id": 10
   })";
-  auto cfg = parse_config(kCfg);
+  auto cfg = parse_config(cfg_text);
   if (!cfg) throw std::runtime_error(cfg.error());
   const auto tensors = expected_tensors(*cfg);
   std::mt19937 rng(42);
@@ -130,9 +131,9 @@ chat::ChatTemplate make_tiny_chat_template() {
 // stops it on destruction, so each test gets an independent instance.
 class RunningServer {
  public:
-  explicit RunningServer(ServerConfig config = {}) {
+  explicit RunningServer(ServerConfig config = {}, int max_positions = 64) {
     config.port = 0;  // let the OS pick a free port
-    server_ = std::make_unique<Server>(std::move(config), make_tiny_transformer(), make_tiny_tokenizer(),
+    server_ = std::make_unique<Server>(std::move(config), make_tiny_transformer(max_positions), make_tiny_tokenizer(),
                                         make_tiny_chat_template());
     thread_ = std::thread([this] { (void)server_->listen(); });
     // bound_port() becomes valid once bind_to_any_port() returns, inside
@@ -239,4 +240,64 @@ TEST(ServerIntegration, RejectsAnInvalidRequestBody) {
   auto v = json::parse(res->body);
   ASSERT_TRUE(v) << v.error();
   EXPECT_TRUE(v->find("error")->find("message")->is_string());
+}
+
+// M8 (ADR 0009): a random-weight model writes garbage on its own, so a
+// well-formed answer here can only come from the grammar constraint.
+TEST(ServerIntegration, JsonSchemaResponseFormatConstrainsTheOutput) {
+  RunningServer rs({}, 1024);  // room for the bounded whitespace a random model may pick
+  httplib::Client cli("127.0.0.1", rs.port());
+  const std::string body = R"({"messages":[{"role":"user","content":"hello"}],"max_tokens":600,"temperature":0.9,
+    "response_format":{"type":"json_schema","json_schema":{"name":"t","strict":true,"schema":{
+      "type":"object","properties":{"ok":{"type":"boolean"},"color":{"enum":["red","green"]},
+      "n":{"type":"integer"}},"required":["ok","color","n"],"additionalProperties":false}}}})";
+  for (int stream = 0; stream < 2; ++stream) {
+    std::string request = body;
+    if (stream == 1) request.insert(1, R"("stream":true,)");
+    auto res = cli.Post("/v1/chat/completions", request, "application/json");
+    ASSERT_TRUE(res);
+    ASSERT_EQ(res->status, 200) << res->body;
+    std::string content;
+    if (stream == 0) {
+      auto v = json::parse(res->body);
+      ASSERT_TRUE(v) << v.error();
+      const auto& choice = v->find("choices")->items().at(0);
+      EXPECT_EQ(choice.find("finish_reason")->text(), "stop");
+      content = choice.find("message")->find("content")->text();
+    } else {
+      // Concatenate the streamed deltas.
+      std::size_t pos = 0;
+      while ((pos = res->body.find("data: {", pos)) != std::string::npos) {
+        const std::size_t end = res->body.find("\n\n", pos);
+        auto chunk = json::parse(std::string_view(res->body).substr(pos + 6, end - pos - 6));
+        ASSERT_TRUE(chunk) << chunk.error();
+        const auto* delta = chunk->find("choices")->items().at(0).find("delta");
+        if (const auto* c = delta->find("content")) content += c->text();
+        pos = end;
+      }
+    }
+    auto answer = json::parse(content);
+    ASSERT_TRUE(answer) << "not JSON: " << content;
+    ASSERT_TRUE(answer->is_object());
+    ASSERT_EQ(answer->members().size(), 3U) << content;
+    EXPECT_EQ(answer->members()[0].first, "ok");
+    EXPECT_TRUE(answer->members()[0].second.is_bool());
+    EXPECT_EQ(answer->members()[1].first, "color");
+    const std::string color = answer->members()[1].second.text();
+    EXPECT_TRUE(color == "red" || color == "green") << content;
+    EXPECT_EQ(answer->members()[2].first, "n");
+    EXPECT_TRUE(answer->members()[2].second.as_i64().has_value()) << content;
+  }
+}
+
+TEST(ServerIntegration, RejectsAnUnsupportedSchemaWith400) {
+  RunningServer rs;
+  httplib::Client cli("127.0.0.1", rs.port());
+  auto res = cli.Post("/v1/chat/completions",
+                       R"({"messages":[{"role":"user","content":"hi"}],"response_format":{"type":"json_schema",
+                          "json_schema":{"name":"t","schema":{"type":"string","pattern":"^a$"}}}})",
+                       "application/json");
+  ASSERT_TRUE(res);
+  EXPECT_EQ(res->status, 400);
+  EXPECT_NE(res->body.find("pattern"), std::string::npos);
 }

@@ -13,7 +13,7 @@ Target dates assume about eight hours a week.
 | **M5 Quantization** | 8-bit and 4-bit block formats; quality loss measured by perplexity against the full-precision model and llama.cpp; speed and memory table | Mar 2027 | ✅ Done (Oct 2026) |
 | **M6 Hardened GGUF loader** | Read GGUF v3 models with every size and offset checked, fuzzed, with a regression set of malformed files and a threat model for loading untrusted model files | Apr 2027 | ✅ Done (Oct 2026) |
 | **M7 Server** | OpenAI-compatible chat completions API with streaming, request limits, localhost by default, Docker image, load test | May–Jun 2027 | ✅ Done (Oct 2026) |
-| **M8 Constrained decoding and performance study** | Generation constrained to a grammar or JSON schema, with tests that every constrained output parses; a measured performance study on Apple Silicon: tokenizer throughput, Q8_0/Q4_0 against higher precision, a memory-bandwidth roofline and KV-cache layout | Apr–May 2027 | Planned |
+| **M8 Constrained decoding and performance study** | Generation constrained to a grammar or JSON schema, with tests that every constrained output parses; a measured performance study on Apple Silicon: tokenizer throughput, Q8_0/Q4_0 against higher precision, a memory-bandwidth roofline and KV-cache layout | Apr–May 2027 | 🔨 In progress: constrained decoding done (Oct 2026); performance study next |
 
 Also planned: Qwen2.5's tokenizer (NFC normalization and its split pattern), so Qwen models run end to end;
 sharded safetensors (`model.safetensors.index.json`) for larger models.
@@ -120,3 +120,17 @@ sharded safetensors (`model.safetensors.index.json`) for larger models.
   Docker's port-publishing reaches a container through its bridge interface, never its loopback —
   caught by actually running the built image against a real model, not assumed from reading
   Docker's own documentation (ADR 0008's Consequences; [server.md](server.md)'s Docker section).
+
+## M8 results (constrained decoding)
+
+- Matcher vs an independent Earley recognizer written in Python: 76,670 strings over 9 grammars (including a
+  converted JSON Schema), 0 disagreements ([evidence](evidence/m8-grammar-crosscheck.txt)). Two bugs planted
+  on purpose give 95 to 1,012 disagreements each ([evidence](evidence/m8-planted-bugs.txt)).
+- SmolLM2-135M-Instruct, 5 schemas x 2 prompts: unconstrained greedy 0 of 10 schema-valid (9 not JSON);
+  constrained greedy 10 of 10 and sampled at T=0.8 50 of 50, judged by `jsonschema` 4.26.0
+  ([evidence](evidence/m8-constrained-json.txt)).
+- Full vocabulary check: 8.49 ms per token on average (20,218 of 100,298 trie nodes visited), against about
+  39 ms for the forward pass, on the 2-core test machine.
+- A real bug found by the server test: an end-of-text id that also decodes to bytes was allowed as text but
+  refused as end-of-text. Fixed ([details](constrained-decoding.md)).
+- Details: [constrained-decoding.md](constrained-decoding.md), [ADR 0009](adr/0009-constrained-decoding.md).

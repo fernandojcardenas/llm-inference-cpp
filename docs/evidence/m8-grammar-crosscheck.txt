@@ -1,0 +1,11 @@
+$ python3 tools/crosscheck_grammar.py build-perf
+PASS alternatives and classes: 141 strings (complete 10, prefix 4, rejected 127), 0 disagreements
+PASS balanced parentheses: 1941 strings (complete 289, prefix 822, rejected 830), 0 disagreements
+PASS counted repetition: 882 strings (complete 357, prefix 47, rejected 478), 0 disagreements
+PASS negated classes and any: 731 strings (complete 240, prefix 256, rejected 235), 0 disagreements
+PASS ambiguous splits: 127 strings (complete 96, prefix 0, rejected 31), 0 disagreements
+PASS nested groups: 1924 strings (complete 1091, prefix 7, rejected 826), 0 disagreements
+PASS unicode classes: 393 strings (complete 68, prefix 88, rejected 237), 0 disagreements
+PASS small JSON: 6139 strings (complete 2183, prefix 269, rejected 3687), 0 disagreements
+PASS JSON Schema (strict subset): 64392 strings (complete 18551, prefix 314, rejected 45527), 0 disagreements
+ALL PASS

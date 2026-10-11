@@ -5,12 +5,15 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <memory>
+#include <optional>
 #include <mutex>
 #include <random>
 #include <string>
 #include <string_view>
 
 #include "httplib.h"
+#include "llmi/grammar/constraint.hpp"
 #include "llmi/model/sampling.hpp"
 #include "llmi/server/response.hpp"
 #include "llmi/util/json.hpp"
@@ -45,6 +48,10 @@ struct Server::Impl {
   // of its own.
   std::mutex generation_mutex;
   std::mt19937_64 rng{std::random_device{}()};
+  // Every token's bytes and their prefix tree, for constrained decoding
+  // (ADR 0009). Built on the first request that needs it, under
+  // generation_mutex, and kept: the vocabulary never changes.
+  std::shared_ptr<const grammar::Vocabulary> vocab;
 
   std::atomic<std::size_t> in_flight{0};
   std::atomic<std::uint64_t> next_id{0};
@@ -82,6 +89,12 @@ struct Server::Impl {
     if (!logits) return fail("forward pass failed: " + logits.error());
 
     const auto& eos_ids = transformer.config().eos_token_ids;
+    std::optional<grammar::Constraint> constraint;
+    if (req.grammar) {
+      if (!vocab) vocab = std::make_shared<const grammar::Vocabulary>(tokenizer);
+      std::vector<TokenId> eos(eos_ids.begin(), eos_ids.end());
+      constraint.emplace(req.grammar, vocab, std::move(eos));
+    }
     // Raw bytes decoded but not yet confirmed as complete, valid UTF-8.
     // Tokenizer::decode() documents that "a prefix of a sequence may end
     // inside a UTF-8 character" -- a single token can be one byte of a
@@ -94,7 +107,15 @@ struct Server::Impl {
     // already uses for bytes it has no token for.
     std::string pending_bytes;
     for (std::size_t step = 0; step < req.max_tokens; ++step) {
-      const TokenId next = sample(logits->data(), logits->size(), req.sampling, rng);
+      TokenId next = 0;
+      if (constraint) {
+        auto picked = constraint->pick(*logits, req.sampling, rng);
+        if (!picked) return fail("constrained decoding failed: " + picked.error());
+        next = *picked;
+        if (!constraint->accept(next)) return fail("constrained decoding failed: grammar rejected its own pick");
+      } else {
+        next = sample(logits->data(), logits->size(), req.sampling, rng);
+      }
       ++result.completion_tokens;
       const bool is_eos = std::find(eos_ids.begin(), eos_ids.end(), static_cast<std::int32_t>(next)) != eos_ids.end();
       if (!is_eos) {
@@ -127,6 +148,12 @@ struct Server::Impl {
         }
       }
       if (stop_matched) {
+        result.finish = FinishReason::Stop;
+        break;
+      }
+      // The grammar is satisfied and allows nothing more: done, without
+      // spending a forward pass on a token that could only be end-of-text.
+      if (constraint && constraint->finished()) {
         result.finish = FinishReason::Stop;
         break;
       }

@@ -44,6 +44,17 @@ by fields this engine doesn't implement.
 | `top_k` | integer | 0 (off) | |
 | `stream` | boolean | false | Server-Sent Events, see below |
 | `stop` | string or array of strings | none | up to 4 sequences; matched against generated text and trimmed from the final non-streaming response |
+| `response_format` | object | `{"type": "text"}` | `{"type": "json_object"}` or `{"type": "json_schema", "json_schema": {"name", "schema", "strict"?}}` constrains the output (M8, see below) |
+
+### Structured output (`response_format`, M8)
+
+With `json_object` the answer is any JSON object; with `json_schema` it matches the schema, using the strict
+subset described in [constrained-decoding.md](constrained-decoding.md) (every property required,
+`additionalProperties: false`). The schema is converted and compiled when the request is parsed, so an
+unsupported keyword is a `400` naming it before any generation starts. `strict` may be given but is not
+needed: the constraint is always enforced. When the grammar is satisfied and allows nothing more, generation
+stops with `finish_reason: "stop"`, without spending a forward pass on the end-of-text token.
+[A real request and response](evidence/m8-server-response-format.txt) ([request body](evidence/m8-server-request.json)).
 
 ### Non-streaming response
 

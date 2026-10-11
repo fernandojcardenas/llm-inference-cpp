@@ -1,0 +1,6 @@
+{"model":"smollm2","max_tokens":200,"temperature":0,
+ "messages":[{"role":"user","content":"Record this as JSON: truck 12 has 84000 miles and needs new brakes."}],
+ "response_format":{"type":"json_schema","json_schema":{"name":"maintenance_record","strict":true,"schema":{
+   "type":"object","properties":{"vehicle":{"type":"string","maxLength":30},"mileage":{"type":"integer"},
+   "status":{"enum":["ok","service_due","out_of_service"]}},
+   "required":["vehicle","mileage","status"],"additionalProperties":false}}}}

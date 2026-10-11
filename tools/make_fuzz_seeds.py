@@ -2,7 +2,7 @@
 """Writes small valid seed inputs for the fuzz targets (no dependencies).
 
   python3 tools/make_fuzz_seeds.py OUT_DIR
-creates OUT_DIR/{safetensors,json,config,tokenizer}/seed-*.
+creates OUT_DIR/{safetensors,gguf,json,config,tokenizer,server_request,grammar}/seed-*.
 """
 import json
 import pathlib
@@ -53,7 +53,7 @@ def gguf_file(tensors, metadata=None, alignment=32):
 def main():
     out = pathlib.Path(sys.argv[1])
     root = pathlib.Path(__file__).resolve().parent.parent
-    for d in ("safetensors", "gguf", "json", "config", "tokenizer", "server_request"):
+    for d in ("safetensors", "gguf", "json", "config", "tokenizer", "server_request", "grammar"):
         (out / d).mkdir(parents=True, exist_ok=True)
     seeds = {
         "a": {"w": ("F32", [2, 2], struct.pack("<4f", 1, -2, 0.5, 3))},
@@ -91,9 +91,34 @@ def main():
         '"max_tokens":32,"temperature":0.7,"top_p":0.9,"top_k":40,"stream":true,"stop":["\\n\\n","END"]}',
         '{"messages":[],"max_tokens":0}',
         '{"messages":[{"role":"user","content":"x"}],"stop":"END"}',
+        '{"messages":[{"role":"user","content":"x"}],"response_format":{"type":"json_object"}}',
+        '{"messages":[{"role":"user","content":"x"}],"response_format":{"type":"json_schema","json_schema":'
+        '{"name":"a","strict":true,"schema":{"type":"object","properties":{"k":{"enum":["v",2]}},'
+        '"required":["k"],"additionalProperties":false}}}}',
     ]
     for i, text in enumerate(server_requests):
         (out / "server_request" / f"seed-{i}").write_bytes(text.encode())
+
+    # fuzz_grammar: grammar text, a 0x00 byte, then text to match; or a JSON
+    # Schema on its own (no 0x00 byte).
+    grammars = [
+        ('root ::= "{" ws (pair (ws "," ws pair)*)? ws "}"\npair ::= "\\"" [a-z]+ "\\"" ws ":" ws [0-9]{1,3}\n'
+         'ws ::= [ \\t\\n]{0,4}', '{"ab": 12, "c":3}'),
+        ('root ::= "(" root ")" root | ""', "(()())"),
+        ('root ::= ([^"\\\\] | "\\\\" .)* "!" [\\u00e0-\\u00ff]?', "ab\\\"c!\u00e9"),
+        ('root ::= x* \nx ::= "a" | "aa" | "aaa"', "aaaaaa"),
+        ('root ::= "a"{2,5} ("b" | "c")+ "d"?', "aaabcbd"),
+    ]
+    for i, (g, t) in enumerate(grammars):
+        (out / "grammar" / f"seed-{i}").write_bytes(g.encode() + b"\x00" + t.encode())
+    schemas = [
+        {"type": "object", "properties": {"a": {"type": "string", "maxLength": 5}, "b": {"enum": [1, "x", None]},
+                                          "c": {"type": "array", "items": {"type": "number"}, "maxItems": 3}},
+         "required": ["a", "b", "c"], "additionalProperties": False},
+        {"anyOf": [{"type": ["integer", "null"]}, {"const": {"k": [True]}}]},
+    ]
+    for i, sc in enumerate(schemas):
+        (out / "grammar" / f"schema-{i}").write_bytes(json.dumps(sc).encode())
 
 
 if __name__ == "__main__":
