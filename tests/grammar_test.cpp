@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "llmi/grammar/grammar.hpp"
+#include "llmi/grammar/json_schema.hpp"
 #include "llmi/grammar/matcher.hpp"
 
 using llmi::grammar::Grammar;
@@ -192,6 +193,55 @@ TEST(GrammarMatch, TokenMaskEqualsCheckingEachTokenOnItsOwn) {
     for (std::size_t id = 0; id < vocab.size(); ++id) {
       const bool expect = !vocab[id].empty() && m.can_accept(vocab[id]);
       EXPECT_EQ(mask[id] == 1, expect) << "prefix '" << prefix << "' token '" << vocab[id] << "'";
+    }
+  }
+}
+
+TEST(GrammarMatch, MemoizedMaskEqualsTheDirectWalk) {
+  // allowed_tokens() memoizes transitions; allowed_tokens_direct() is the
+  // original per-node walk. They must agree byte for byte at every state.
+  // The vocabulary gives every printable ASCII byte its own token, so a
+  // free-form string allows almost all of them -- the case the memo collapses
+  // and the one most likely to expose a divergence -- plus structural and
+  // multi-byte tokens.
+  std::vector<std::string> vocab;
+  vocab.emplace_back();  // id 0: no bytes, never allowed
+  for (int c = 0x20; c < 0x7f; ++c) vocab.emplace_back(1, static_cast<char>(c));
+  for (const char* t : {"{\"", "\":", "\",", "\"}", "ab", "abc", "123", "true", "false", "null", ", ", ": ",
+                        "\xc3\xa9", "\xc3", "\xa9", "\xe2\x9c\x93"}) {
+    vocab.emplace_back(t);
+  }
+  const TokenTrie trie(vocab);
+
+  std::vector<std::string> grammars = {
+      "root ::= \"\\\"\" char* \"\\\"\"\nchar ::= [^\"]\n",  // a free-form JSON string
+      "root ::= \"[\" ws item (ws \",\" ws item)* ws \"]\"\nitem ::= [a-z]+\nws ::= [ \\t]*\n",
+      "root ::= \"{\" ws \"\\\"\" [a-z]+ \"\\\"\" ws \":\" ws val ws \"}\"\n"
+      "val ::= \"\\\"\" [^\"]* \"\\\"\" | [0-9]+ | \"true\" | \"false\" | \"null\"\nws ::= [ \\t\\n]*\n",
+      llmi::grammar::json_object_grammar(),
+  };
+
+  for (const std::string& text : grammars) {
+    const auto g = compile(text);
+    ASSERT_NE(g, nullptr);
+    Matcher m(g);
+    std::vector<std::uint8_t> memo;
+    std::vector<std::uint8_t> direct;
+    for (int step = 0; step < 60; ++step) {
+      m.allowed_tokens(trie, memo);
+      m.allowed_tokens_direct(trie, direct);
+      ASSERT_EQ(memo, direct) << "grammar:\n" << text << "step " << step;
+      int picked = -1;  // advance by the lowest-id allowed, non-empty token
+      for (std::size_t id = 0; id < memo.size(); ++id) {
+        if (memo[id] != 0 && !vocab[id].empty()) {
+          picked = static_cast<int>(id);
+          break;
+        }
+      }
+      if (picked < 0) break;
+      if (m.complete() && step >= 4) break;
+      ASSERT_TRUE(m.accept(vocab[static_cast<std::size_t>(picked)]));
+      if (m.complete() && !m.has_continuation()) break;
     }
   }
 }

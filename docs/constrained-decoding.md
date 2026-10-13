@@ -145,11 +145,34 @@ The cause is allocation, not grammar logic: the mask does **about 12 heap alloca
 matcher rebuilds a full State -- a set of grammar-position stacks -- at every node of the walk), so a heavy
 free-string mask churns roughly 1.2 million allocations and 70 MB, allocated and freed, for one token.
 
-That points straight at the next optimization -- carry the State down the trie and reuse its buffers instead of
-reallocating per node -- which would cut the heavy case most. It is left as the next step rather than rushed in
-here: the mask's output must stay bit-identical (it is what the independent Earley cross-check guarantees), so
-it deserves its own change, the way M4 deferred a row-blocked GEMM ([docs/performance.md](performance.md)) and
-M5 deferred a quantized SIMD kernel ([ADR 0006](adr/0006-block-quantization-matches-gguf-no-simd-yet.md)).
+### The optimization (M8, part 3)
+
+That points straight at the fix: most of those per-node allocations rebuild a matcher state that a sibling node
+just built, because a whole trie subtree is reached under the same grammar state (everything inside a
+free-form string). `allowed_tokens()` now **memoizes transitions**: each distinct state it reaches is interned
+to an index, and each `(state, byte)` transition is computed once and cached, so the subtree costs a cache
+lookup per node instead of rebuilding the state. `step`, `advance` and `normalize` are untouched; the original
+per-node walk stays as `allowed_tokens_direct()`, used as the fallback when a grammar reaches more distinct
+states than the memo caps (2,048) and as the oracle in the tests.
+
+The masks are identical by construction, and checked to be: a unit test drives several grammars and asserts
+`allowed_tokens()` equals `allowed_tokens_direct()` byte for byte at every state, an independent driver does
+the same over the real 49k-token vocabulary under ASan+UBSan (0 mismatches), and the real-model
+constrained-JSON eval still reports every output valid.
+
+The effect ([evidence](evidence/m8-mask-optimization.txt), before/after on the same machine):
+
+| | before (per-node walk) | after (memoized) |
+|---|---|---|
+| heap allocations per trie node | ~12.5 | ~0.25 |
+| heavy free-form-string mask | 50-63 ms | 6-9 ms |
+| word-list GBNF mask (heavy throughout) | ~6.5 ms | ~0.45 ms |
+| sampled decoding, mask over forward+sample | +19% | **+2.5%** |
+
+What remains is the trie traversal itself -- visiting the nodes and writing the mask bits -- not allocation.
+(M4 and M5 deferred their last optimization, a row-blocked GEMM in [docs/performance.md](performance.md) and a
+quantized SIMD kernel in [ADR 0006](adr/0006-block-quantization-matches-gguf-no-simd-yet.md); this one was the
+mask's turn.)
 
 ## What's not here
 
@@ -159,6 +182,6 @@ M5 deferred a quantized SIMD kernel ([ADR 0006](adr/0006-block-quantization-matc
   optional properties. Each is rejected with an error naming it.
 - String length counts JSON characters, so a surrogate-pair escape counts as two where JSON Schema counts one
   code point.
-- The trie walk reallocates the matcher State at every node rather than reusing it down the tree. The
-  performance study above shows this is what makes a free-string mask expensive (~12 allocations per node); the
-  fix is the next optimization, kept separate because the mask output must stay bit-identical.
+- Masking still walks the whole trie subtree a permissive state allows; the memo (part 3) removes the
+  per-node state rebuild but not the traversal, so a free-form string is still the most expensive position,
+  now by a much smaller margin.

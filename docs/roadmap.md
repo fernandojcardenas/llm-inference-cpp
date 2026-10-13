@@ -13,7 +13,7 @@ Target dates assume about eight hours a week.
 | **M5 Quantization** | 8-bit and 4-bit block formats; quality loss measured by perplexity against the full-precision model and llama.cpp; speed and memory table | Mar 2027 | ✅ Done (Oct 2026) |
 | **M6 Hardened GGUF loader** | Read GGUF v3 models with every size and offset checked, fuzzed, with a regression set of malformed files and a threat model for loading untrusted model files | Apr 2027 | ✅ Done (Oct 2026) |
 | **M7 Server** | OpenAI-compatible chat completions API with streaming, request limits, localhost by default, Docker image, load test | May–Jun 2027 | ✅ Done (Oct 2026) |
-| **M8 Constrained decoding and performance study** | Generation constrained to a grammar or JSON schema, with tests that every constrained output parses; a measured performance study on Apple Silicon: tokenizer throughput, Q8_0/Q4_0 against higher precision, a memory-bandwidth roofline and KV-cache layout | Apr–May 2027 | 🔨 In progress: constrained decoding and its performance study done (Oct 2026); the broader Apple-Silicon study (tokenizer throughput, quantization roofline, KV-cache layout) still to do |
+| **M8 Constrained decoding and performance study** | Generation constrained to a grammar or JSON schema, with tests that every constrained output parses; a measured performance study on Apple Silicon: tokenizer throughput, Q8_0/Q4_0 against higher precision, a memory-bandwidth roofline and KV-cache layout | Apr–May 2027 | 🔨 In progress: constrained decoding, its performance study, and the masking optimization done (Oct 2026); the broader Apple-Silicon study (tokenizer throughput, quantization roofline, KV-cache layout) still to do |
 
 Also planned: Qwen2.5's tokenizer (NFC normalization and its split pattern), so Qwen models run end to end;
 sharded safetensors (`model.safetensors.index.json`) for larger models.
@@ -144,7 +144,16 @@ sharded safetensors (`model.safetensors.index.json`) for larger models.
   walk visits ~99,500 of 100,298 trie nodes. The cause is ~12 heap allocations per trie node (the matcher
   rebuilds its State per node): a heavy mask churns ~1.2 M allocations / ~70 MB for one token
   ([evidence](evidence/m8-mask-profile.txt), model-free `tools/bench_constrained.cpp`).
-- Next optimization identified, not yet built: carry the matcher State down the trie and reuse its buffers
-  instead of reallocating per node. Kept separate because the mask output must stay bit-identical (the Earley
-  cross-check), the same way M4 deferred a row-blocked GEMM and M5 a quantized SIMD kernel.
 - Details and the full tables: [constrained-decoding.md](constrained-decoding.md#performance-study-m8-part-2).
+
+## M8 results (masking optimization, part 3)
+
+- `allowed_tokens()` now memoizes transitions (each distinct matcher state interned, each `(state, byte)`
+  computed once) instead of rebuilding the state at every trie node. `allowed_tokens_direct()` keeps the
+  original walk as the fallback and test oracle; `step`/`advance`/`normalize` are unchanged.
+- Before → after on the same machine: ~12.5 → ~0.25 heap allocations per trie node; a heavy free-form-string
+  mask 50-63 ms → 6-9 ms; constrained **sampling overhead 19% → 2.5%** over forward+sampling
+  ([evidence](evidence/m8-mask-optimization.txt)).
+- Masks are bit-identical to the old walk: a unit test and an independent driver over the real vocabulary
+  (under ASan+UBSan) agree 0-for-0, and the real-model constrained-JSON eval still reports every output valid.
+- Details: [constrained-decoding.md](constrained-decoding.md#the-optimization-m8-part-3).

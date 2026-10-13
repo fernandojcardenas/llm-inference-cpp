@@ -62,7 +62,15 @@ class Matcher {
   // token in `trie` (tokens with no bytes, such as special tokens, are 0;
   // whether to allow end-of-sequence is the caller's decision, from
   // complete()). `mask` is resized to trie.vocab_size().
+  //
+  // allowed_tokens() memoizes transitions so a grammar state reached by many
+  // tokens (a free-form string allows nearly all of them) computes each byte
+  // transition once instead of once per trie node (M8 part 2 perf study). Its
+  // result is identical, byte for byte, to allowed_tokens_direct(), the
+  // original un-memoized walk kept as the fallback when a grammar reaches more
+  // distinct states than the memo caps, and as the oracle in the unit tests.
   void allowed_tokens(const TokenTrie& trie, std::vector<std::uint8_t>& mask) const;
+  void allowed_tokens_direct(const TokenTrie& trie, std::vector<std::uint8_t>& mask) const;
 
   // Statistics for the performance study: trie nodes visited by the last
   // allowed_tokens() call.

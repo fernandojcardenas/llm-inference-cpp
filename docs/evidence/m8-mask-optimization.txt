@@ -1,0 +1,80 @@
+M8 part 3 -- the mask optimization measured. allowed_tokens() now memoizes
+transitions: the matcher state at each trie node is interned and every
+(state, byte) transition is computed once instead of once per node, so a
+subtree reached under one state (a free-form string allows nearly the whole
+vocabulary) costs a cache lookup per node instead of rebuilding the state.
+allowed_tokens_direct() keeps the original per-node walk; the two produce
+byte-identical masks (unit test GrammarMatch.MemoizedMaskEqualsTheDirectWalk,
+plus an independent driver over the real 49k-token vocabulary under ASan+UBSan,
+0 mismatches). step/advance/normalize are unchanged.
+
+Machine: 2 vCPU Linux x86_64 sandbox. Before = commit base c585cdb's parent
+state (pre-optimization); after = this change. Clean -O3 build, no sanitizers.
+
+Reproduce (same tools as part 2, run on each version):
+  g++ -O3 -std=c++20 -I include tools/bench_constrained.cpp src/grammar/matcher.cpp \
+      src/grammar/grammar.cpp src/grammar/json_schema.cpp src/tokenizer/tokenizer.cpp \
+      src/util/json.cpp src/util/utf8.cpp -o bench_constrained
+  ./bench_constrained testdata/smollm2-135m/tokenizer.json
+
+=== BEFORE (per-node walk) ===
+tokenizer: testdata/smollm2-135m/tokenizer.json
+vocabulary: 49152 tokens (49135 with bytes a grammar can allow), trie 100298 nodes built in 46.4 ms
+timing: median of 25 repetitions per mask; one mask per generated token
+
+grammar                             masks median ms   mean ms    max ms   heavy  med node  max node
+-------                             -----  --------   -------    ------   -----  --------  --------
+person (schema)                        59     0.043     9.260    51.158      11        98     99565
+maintenance (schema, enum+array)       88     0.030     4.981    64.782       9        70     99506
+shopping-list (schema, nested)         49     0.022     2.627    50.549       3        43     99398
+any JSON object                         1     0.007     0.007     0.007       0         4         4
+word list (GBNF)                      160     6.620     5.028    12.575       0     20789     20789
+("heavy" = masks that walked >= 50149 trie nodes, i.e. most of the vocabulary)
+
+allocation profile (one full walk per grammar, heap allocations counted):
+grammar                                 nodes  allocations   alloc/node bytes/node
+-------                                 -----  -----------   ---------- ----------
+person (schema)                       1110370     14067450        12.67      585.8
+maintenance (schema, enum+array)       866389     10777559        12.44      705.1
+shopping-list (schema, nested)         266756      3215116        12.05      788.3
+any JSON object                             4          175        43.75    13327.0
+word list (GBNF)                      2341809     18809094         8.03      283.1
+
+=== AFTER (memoized transitions) ===
+tokenizer: testdata/smollm2-135m/tokenizer.json
+vocabulary: 49152 tokens (49135 with bytes a grammar can allow), trie 100298 nodes built in 50.6 ms
+timing: median of 25 repetitions per mask; one mask per generated token
+
+grammar                             masks median ms   mean ms    max ms   heavy  med node  max node
+-------                             -----  --------   -------    ------   -----  --------  --------
+person (schema)                        59     0.033     1.453    10.479      11        98     99565
+maintenance (schema, enum+array)       88     0.036     0.750     7.091       9        70     99506
+shopping-list (schema, nested)         49     0.020     0.421     6.683       3        43     99398
+any JSON object                         1     0.009     0.009     0.009       0         4         4
+word list (GBNF)                      160     0.466     0.371     0.686       0     20789     20789
+("heavy" = masks that walked >= 50149 trie nodes, i.e. most of the vocabulary)
+
+allocation profile (one full walk per grammar, heap allocations counted):
+grammar                                 nodes  allocations   alloc/node bytes/node
+-------                                 -----  -----------   ---------- ----------
+person (schema)                       1110370       254064         0.23       29.7
+maintenance (schema, enum+array)       866389       220932         0.26       35.5
+shopping-list (schema, nested)         266756        82661         0.31       46.3
+any JSON object                             4          181        45.25    15151.0
+word list (GBNF)                      2341809        73131         0.03        8.2
+
+Reading this:
+- Allocations per trie node fall from ~12-13 to ~0.25: the memo computes each
+  distinct (state, byte) transition once rather than rebuilding the matcher
+  State -- and its heap allocations -- at every node.
+- The heavy free-form-string mask (walking ~99,500 nodes) drops from 50-63 ms
+  to 6-9 ms; the word-list GBNF, heavy at every position, from ~6.5 ms to
+  ~0.45 ms. The remaining cost is the trie traversal itself (visiting the nodes
+  and writing the mask bits), not allocation.
+- End to end on SmolLM2-135M-Instruct over the five schemas (tools/
+  bench_decode_overhead.py), the full mask a sampled token pays drops from
+  12.17 ms to 1.70 ms, so constrained sampling now adds 2.5% over forward+
+  sampling instead of 19%; constrained greedy stays nearly free (0.8% -> 0.3%).
+- Masks are unchanged: every token the grammar allowed before, it allows now
+  (the equivalence test and the real-model constrained-JSON eval, which still
+  reports ALL CONSTRAINED OUTPUTS VALID, confirm it).

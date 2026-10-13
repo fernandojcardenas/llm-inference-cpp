@@ -1,6 +1,10 @@
 #include "llmi/grammar/matcher.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cstdint>
+#include <utility>
+#include <vector>
 
 #include "llmi/util/utf8.hpp"
 
@@ -199,7 +203,7 @@ bool Matcher::has_continuation() const {
          std::any_of(state_.stacks.begin(), state_.stacks.end(), [](const Stack& s) { return !s.empty(); });
 }
 
-void Matcher::allowed_tokens(const TokenTrie& trie, std::vector<std::uint8_t>& mask) const {
+void Matcher::allowed_tokens_direct(const TokenTrie& trie, std::vector<std::uint8_t>& mask) const {
   mask.assign(trie.vocab_size(), 0);
   last_nodes_visited_ = 0;
   if (trie.nodes_.empty() || dead()) return;
@@ -216,6 +220,84 @@ void Matcher::allowed_tokens(const TokenTrie& trie, std::vector<std::uint8_t>& m
     for (const auto& [byte, child] : n.children) {
       State next;
       if (step(st, byte, next)) work.emplace_back(child, std::move(next));
+    }
+  }
+}
+
+namespace {
+
+// Two matcher states are equal when they would accept exactly the same bytes.
+// States are kept canonical (stacks sorted and deduplicated by normalize/the
+// constructor), so equal states have identical `stacks`; only the live bytes
+// of a half-read character matter.
+bool states_equal(const Matcher::State& a, const Matcher::State& b) {
+  if (a.partial_len != b.partial_len) return false;
+  for (std::uint8_t i = 0; i < a.partial_len; ++i) {
+    if (a.partial.at(i) != b.partial.at(i)) return false;
+  }
+  return a.stacks == b.stacks;
+}
+
+}  // namespace
+
+void Matcher::allowed_tokens(const TokenTrie& trie, std::vector<std::uint8_t>& mask) const {
+  // Same depth-first walk as allowed_tokens_direct, but the matcher state at
+  // each node is interned to an index and every (state, byte) transition is
+  // computed once and cached. A trie subtree reached under one state -- a
+  // free-form string allows almost the whole vocabulary -- then costs a cache
+  // lookup per node instead of rebuilding the state (and its allocations) at
+  // every node. The result is identical to allowed_tokens_direct().
+  constexpr std::size_t kMaxMemoStates = 2048;  // beyond this, fall back
+  constexpr std::int32_t kUnknown = -2;
+  constexpr std::int32_t kReject = -1;
+  constexpr std::int32_t kMemoFull = -3;
+
+  mask.assign(trie.vocab_size(), 0);
+  last_nodes_visited_ = 0;
+  if (trie.nodes_.empty() || dead()) return;
+
+  std::vector<State> states;
+  states.push_back(state_);
+  std::vector<std::array<std::int32_t, 256>> trans;  // per state: byte -> child index / kReject / kUnknown
+  trans.emplace_back();
+  trans.back().fill(kUnknown);
+
+  // Index of `s`, interning it if new; kMemoFull if the cap is reached.
+  const auto intern = [&](State&& s) -> std::int32_t {
+    for (std::size_t i = 0; i < states.size(); ++i) {
+      if (states_equal(states[i], s)) return static_cast<std::int32_t>(i);
+    }
+    if (states.size() >= kMaxMemoStates) return kMemoFull;
+    states.push_back(std::move(s));
+    trans.emplace_back();
+    trans.back().fill(kUnknown);
+    return static_cast<std::int32_t>(states.size() - 1);
+  };
+
+  std::vector<std::pair<std::uint32_t, std::int32_t>> work;
+  work.emplace_back(0U, 0);
+  while (!work.empty()) {
+    const auto [node, sidx] = work.back();
+    work.pop_back();
+    ++last_nodes_visited_;
+    const TokenTrie::Node& n = trie.nodes_[node];
+    for (const std::int32_t id : n.tokens) mask[static_cast<std::size_t>(id)] = 1;
+    for (const auto& [byte, child] : n.children) {
+      std::int32_t t = trans[static_cast<std::size_t>(sidx)][byte];
+      if (t == kUnknown) {
+        State next;
+        if (step(states[static_cast<std::size_t>(sidx)], byte, next)) {
+          t = intern(std::move(next));
+          if (t == kMemoFull) {  // too many distinct states: use the direct walk
+            allowed_tokens_direct(trie, mask);
+            return;
+          }
+        } else {
+          t = kReject;
+        }
+        trans[static_cast<std::size_t>(sidx)][byte] = t;
+      }
+      if (t >= 0) work.emplace_back(child, t);
     }
   }
 }

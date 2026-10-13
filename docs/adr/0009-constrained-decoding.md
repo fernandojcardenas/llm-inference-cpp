@@ -77,9 +77,10 @@ and number lengths are bounded so a model cannot loop forever on spaces or digit
   shortcut skips that check whenever the model's own top token is already allowed. The M8 part-2 performance
   study ([docs/constrained-decoding.md](../constrained-decoding.md#performance-study-m8-part-2)) measured this:
   about 0.8% added over the forward pass for greedy, about 19% for sampling, with the mask's cost dominated by
-  free-string positions and, underneath, about 12 heap allocations per trie node. Reusing the matcher State
-  down the trie instead of reallocating per node is the identified next optimization, left separate so the
-  mask output stays bit-identical.
+  free-string positions and, underneath, about 12 heap allocations per trie node. Part 3 then memoized the
+  masker's transitions (intern each distinct state, compute each `(state, byte)` once) rather than rebuilding
+  the state per node: ~12.5 → ~0.25 allocations per node and sampling overhead 19% → 2.5%, with the masks
+  byte-identical to the original walk (kept as `allowed_tokens_direct()`, the fallback and test oracle).
 - Qwen2.5 cannot be constrained until its tokenizer is supported.
 - New code is concentrated in `src/grammar/` (parser, matcher, schema converter, constraint), with small hooks
   in the server request parser, the server loop and `llmi-generate`.
