@@ -13,7 +13,7 @@ Target dates assume about eight hours a week.
 | **M5 Quantization** | 8-bit and 4-bit block formats; quality loss measured by perplexity against the full-precision model and llama.cpp; speed and memory table | Mar 2027 | ✅ Done (Oct 2026) |
 | **M6 Hardened GGUF loader** | Read GGUF v3 models with every size and offset checked, fuzzed, with a regression set of malformed files and a threat model for loading untrusted model files | Apr 2027 | ✅ Done (Oct 2026) |
 | **M7 Server** | OpenAI-compatible chat completions API with streaming, request limits, localhost by default, Docker image, load test | May–Jun 2027 | ✅ Done (Oct 2026) |
-| **M8 Constrained decoding and performance study** | Generation constrained to a grammar or JSON schema, with tests that every constrained output parses; a measured performance study on Apple Silicon: tokenizer throughput, Q8_0/Q4_0 against higher precision, a memory-bandwidth roofline and KV-cache layout | Apr–May 2027 | 🔨 In progress: constrained decoding done (Oct 2026); performance study next |
+| **M8 Constrained decoding and performance study** | Generation constrained to a grammar or JSON schema, with tests that every constrained output parses; a measured performance study on Apple Silicon: tokenizer throughput, Q8_0/Q4_0 against higher precision, a memory-bandwidth roofline and KV-cache layout | Apr–May 2027 | 🔨 In progress: constrained decoding and its performance study done (Oct 2026); the broader Apple-Silicon study (tokenizer throughput, quantization roofline, KV-cache layout) still to do |
 
 Also planned: Qwen2.5's tokenizer (NFC normalization and its split pattern), so Qwen models run end to end;
 sharded safetensors (`model.safetensors.index.json`) for larger models.
@@ -134,3 +134,17 @@ sharded safetensors (`model.safetensors.index.json`) for larger models.
 - A real bug found by the server test: an end-of-text id that also decodes to bytes was allowed as text but
   refused as end-of-text. Fixed ([details](constrained-decoding.md)).
 - Details: [constrained-decoding.md](constrained-decoding.md), [ADR 0009](adr/0009-constrained-decoding.md).
+
+## M8 results (performance study, part 2)
+
+- End to end on SmolLM2-135M-Instruct over the five schemas, against a ~60 ms/token forward baseline:
+  constrained greedy adds **0.8%** (the greedy shortcut skips ~89% of masks); constrained sampling adds **19%**
+  (a full mask every token) ([evidence](evidence/m8-decode-overhead.txt)).
+- The mask cost is bimodal: ~0.04 ms at structural positions, but 50-62 ms inside a free-form string where the
+  walk visits ~99,500 of 100,298 trie nodes. The cause is ~12 heap allocations per trie node (the matcher
+  rebuilds its State per node): a heavy mask churns ~1.2 M allocations / ~70 MB for one token
+  ([evidence](evidence/m8-mask-profile.txt), model-free `tools/bench_constrained.cpp`).
+- Next optimization identified, not yet built: carry the matcher State down the trie and reuse its buffers
+  instead of reallocating per node. Kept separate because the mask output must stay bit-identical (the Earley
+  cross-check), the same way M4 deferred a row-blocked GEMM and M5 a quantized SIMD kernel.
+- Details and the full tables: [constrained-decoding.md](constrained-decoding.md#performance-study-m8-part-2).

@@ -73,9 +73,13 @@ and number lengths are bounded so a model cannot loop forever on spaces or digit
 
 - Output structure is guaranteed; content is not. A constrained model can still put the wrong year in a
   valid field.
-- Sampling with a grammar costs about 8.5 ms per token for a full vocabulary check on the 2-core sandbox
-  (forward pass about 39 ms). Greedy decoding is nearly free. The M8 performance study measures where the time
-  goes before anything is optimized.
+- Sampling with a grammar costs a full vocabulary check per token; greedy decoding is nearly free because the
+  shortcut skips that check whenever the model's own top token is already allowed. The M8 part-2 performance
+  study ([docs/constrained-decoding.md](../constrained-decoding.md#performance-study-m8-part-2)) measured this:
+  about 0.8% added over the forward pass for greedy, about 19% for sampling, with the mask's cost dominated by
+  free-string positions and, underneath, about 12 heap allocations per trie node. Reusing the matcher State
+  down the trie instead of reallocating per node is the identified next optimization, left separate so the
+  mask output stays bit-identical.
 - Qwen2.5 cannot be constrained until its tokenizer is supported.
 - New code is concentrated in `src/grammar/` (parser, matcher, schema converter, constraint), with small hooks
   in the server request parser, the server loop and `llmi-generate`.

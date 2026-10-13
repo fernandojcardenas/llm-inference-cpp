@@ -1,0 +1,42 @@
+M8 part 2 -- how much time constrained decoding adds to generation (sandbox, real model).
+Runs the real llmi-generate on SmolLM2-135M-Instruct over the five JSON schemas from
+tools/eval_constrained_json.py, in three modes, and uses the engine's own per-run
+instrumentation (generate_seconds, mask_seconds, full_masks) to split each token's time into
+forward+sampling vs the grammar mask.
+
+Machine: 2 vCPU Linux x86_64 sandbox. Commit base: 7c95387. Clean Release build (build-perf,
+no sanitizers). Absolute ms/token are specific to this machine and to the mix of outputs each
+mode happens to generate (so the forward+sample column is not identical across modes); the
+portable results are the ratios and the greedy-shortcut rate. The M8 part-1 evidence recorded
+a sampled mask at 8.49 ms on its own run; here it is ~12.5 ms -- the same measurement on a
+slower instance, not a regression.
+
+Reproduce:
+  cmake -S . -B build-perf -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLMI_BUILD_TESTS=OFF
+  cmake --build build-perf --target llmi-generate
+  tools/fetch_model.sh smollm2-135m-instruct models/smollm2-135m-instruct
+  python3 tools/bench_decode_overhead.py build-perf models/smollm2-135m-instruct --seeds 3
+
+model: smollm2-135m-instruct; schemas: 5; prompts per schema: 2; sampled seeds: 3
+one mask per generated token; times are per generated token
+
+  unconstrained, greedy (baseline)
+      10 runs, 1194 tokens;   57.5 ms/token total =   57.5 forward+sample +   0.00 mask
+      full masks: 0 of 1194 picks (100% skipped by the greedy shortcut); mask adds 0.0% over forward+sample
+  constrained, greedy
+      10 runs, 419 tokens;   62.7 ms/token total =   62.1 forward+sample +   0.52 mask
+      full masks: 47 of 419 picks (89% skipped by the greedy shortcut); mask adds 0.8% over forward+sample
+  constrained, sampled T=0.8
+      30 runs, 1270 tokens;   76.2 ms/token total =   64.0 forward+sample +  12.17 mask
+      full masks: 1270 of 1270 picks (0% skipped by the greedy shortcut); mask adds 19.0% over forward+sample
+
+Reading this:
+- Unconstrained greedy is the baseline: no grammar, no mask.
+- Constrained greedy is nearly free. The greedy shortcut (if the model's own top token is
+  already allowed by the grammar, skip the full vocabulary mask) skips ~89% of masks, so the
+  grammar adds under 1% to generation time. The few full masks that remain are the ones that
+  land inside a free-form string (see m8-mask-profile.txt).
+- Constrained sampling pays a full mask on every token (top-k and top-p must operate on the
+  allowed tokens, so the mask cannot be skipped -- ADR 0009). On this machine that is ~12.5 ms
+  per token, about 19% on top of forward+sampling. The mask runs on the CPU while the forward
+  pass is the dominant cost, so even here the model, not the grammar, sets the pace.

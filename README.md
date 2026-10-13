@@ -12,7 +12,7 @@ bounds-checked and fuzzed.
 **Status: M1–M7 done** (model loading, tokenization, a forward pass that matches PyTorch
 layer by layer, a KV cache, sampling, an interactive chat CLI, a threaded SIMD matmul, 8-bit/4-bit
 quantization, a hardened GGUF loader, and an OpenAI-compatible chat completions server). **M8 in
-progress:** constrained decoding (grammars and JSON Schema) is done; a performance study is next. See the
+progress:** constrained decoding (grammars and JSON Schema) and its performance study are done. See the
 [roadmap](docs/roadmap.md).
 
 ```
@@ -96,8 +96,12 @@ this engine ([evidence](docs/evidence/m8-constrained-json.txt)). The matcher agr
 Earley parser on 76,670 strings across 9 grammars, and two bugs planted on purpose produce 95 and 1,012
 disagreements, so that check has teeth ([evidence](docs/evidence/m8-grammar-crosscheck.txt),
 [planted bugs](docs/evidence/m8-planted-bugs.txt)). Grammars come from HTTP clients, so the parser and matcher
-are bounded, fail closed and fuzzed in CI like the model loaders. A full vocabulary check costs about 8.5 ms
-per token on the 2-core test machine, against about 39 ms for the forward pass.
+are bounded, fail closed and fuzzed in CI like the model loaders. A performance study
+([docs/constrained-decoding.md](docs/constrained-decoding.md#performance-study-m8-part-2)) measures the cost:
+against a ~60 ms/token forward pass, constrained greedy decoding adds under 1% (a shortcut skips the full
+vocabulary mask ~89% of the time), while sampling, which must mask every token, adds about a fifth. The mask's
+own cost is dominated by free-form string positions, where it walks nearly the whole vocabulary trie and does
+about 12 heap allocations per node -- the identified next optimization.
 
 ```
 $ build/llmi-generate models/smollm2-135m-instruct --prompt "$P" --max-new 80 --json-schema person.json
@@ -314,7 +318,7 @@ src/            implementation; src/tokenizer/unicode_tables.inc is generated fr
 apps/           llmi-inspect, llmi-gguf-inspect, llmi-tokenize, llmi-generate, llmi-chat, llmi-chat-template, llmi-perplexity, llmi-server, llmi-grammar
 tests/          unit tests
 fuzz/           libFuzzer targets
-tools/          model download, cross-checks (incl. an independent Earley grammar recognizer), constrained-JSON evaluation, Unicode table generator and probe, fuzz seeds, matmul microbenchmark, perplexity-eval token ids, server load test
+tools/          model download, cross-checks (incl. an independent Earley grammar recognizer), constrained-JSON evaluation, Unicode table generator and probe, fuzz seeds, matmul and constrained-mask microbenchmarks, decode-overhead benchmark, perplexity-eval token ids, server load test
 testdata/       tokenizer.json/config.json/tokenizer_config.json for the three models (Apache 2.0)
 third_party/    vendored cpp-httplib (MIT) -- this engine's HTTP transport, see THIRD-PARTY.md
 docs/           roadmap, tokenizer, forward-pass, KV cache, sampling, chat-template, quantization, GGUF, server and constrained-decoding

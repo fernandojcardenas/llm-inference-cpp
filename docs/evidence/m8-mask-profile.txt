@@ -1,0 +1,58 @@
+M8 part 2 -- constrained-decoding mask profile (sandbox, model-free). Where the per-token
+mask cost goes, measured directly on the real SmolLM2 vocabulary with no model, by driving
+each grammar along a valid token path and timing Matcher::allowed_tokens() at every step.
+This is the profiling step behind the M8 performance study (docs/constrained-decoding.md),
+the same idea as tools/bench_kernels.cpp for M4.
+
+Machine: 2 vCPU Linux x86_64 sandbox. Commit base: 7c95387. Clean -O3 build (no sanitizers:
+a sanitizer-instrumented binary would distort these times, see m4-profile.txt). Absolute
+times vary with the machine; the shape of the result (a few "heavy" free-string masks
+dominating, driven by per-node allocation) does not.
+
+Reproduce:
+  g++ -O3 -std=c++20 -I include \
+      tools/bench_constrained.cpp src/grammar/matcher.cpp src/grammar/grammar.cpp \
+      src/grammar/json_schema.cpp src/tokenizer/tokenizer.cpp src/util/json.cpp \
+      src/util/utf8.cpp -o bench_constrained
+  ./bench_constrained testdata/smollm2-135m/tokenizer.json
+
+tokenizer: testdata/smollm2-135m/tokenizer.json
+vocabulary: 49152 tokens (49135 with bytes a grammar can allow), trie 100298 nodes built in 28.8 ms
+timing: median of 25 repetitions per mask; one mask per generated token
+
+grammar                             masks median ms   mean ms    max ms   heavy  med node  max node
+-------                             -----  --------   -------    ------   -----  --------  --------
+person (schema)                        59     0.039     9.252    53.074      11        98     99565
+maintenance (schema, enum+array)       88     0.030     4.842    51.862       9        70     99506
+shopping-list (schema, nested)         49     0.022     2.651    49.395       3        43     99398
+any JSON object                         1     0.007     0.007     0.007       0         4         4
+word list (GBNF)                      160     6.449     4.947    12.736       0     20789     20789
+("heavy" = masks that walked >= 50149 trie nodes, i.e. most of the vocabulary)
+
+allocation profile (one full walk per grammar, heap allocations counted):
+grammar                                 nodes  allocations   alloc/node bytes/node
+-------                                 -----  -----------   ---------- ----------
+person (schema)                       1110370     14067450        12.67      585.8
+maintenance (schema, enum+array)       866389     10777559        12.44      705.1
+shopping-list (schema, nested)         266756      3215116        12.05      788.3
+any JSON object                             4          175        43.75    13327.0
+word list (GBNF)                      2341809     18809094         8.03      283.1
+
+Reading this:
+- "masks" is the number of tokens in the walk (one mask per generated token). "median ms" is
+  the typical mask; "mean ms" is pulled up by the few "heavy" masks; "heavy" counts masks that
+  walked most of the trie.
+- Most positions in a JSON grammar are structural ({ " : , digits, enum words): only a handful
+  of tokens are allowed, so the mask visits tens of nodes and costs ~0.03-0.05 ms.
+- Inside a free-form string the grammar allows almost any character, so almost every token is
+  allowed and the walk visits ~99,500 of 100,298 trie nodes -- 50-62 ms for that one token.
+  The word-list GBNF ([a-z]+ bodies) is uniformly "heavy" for the same reason (~20,789 nodes).
+- Allocation profile: the mask does ~12-13 heap allocations PER TRIE NODE. A heavy free-string
+  mask (~99,500 nodes) therefore churns ~1.2 million allocations and ~70 MB, allocated and
+  freed, for a single token. The matcher rebuilds a full State (a set of grammar-position
+  stacks) at every node of the walk. This per-node allocation -- not the grammar logic -- is
+  what makes a heavy mask expensive, and is the clear target for a future optimization (reuse
+  the State buffers down the trie / avoid reallocating per node). Not done here: the mask
+  output must stay bit-identical (checked by the independent Earley cross-check), so it is a
+  careful change for its own change, documented as the next step the way M4 deferred a
+  row-blocked GEMM and M5 deferred a quantized SIMD kernel.

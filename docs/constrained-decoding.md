@@ -97,7 +97,7 @@ Measured on this project's 2-core x86 sandbox (Release build, SmolLM2-135M-Instr
   sampling with a grammar adds roughly a fifth to generation time.
 - Greedy runs mostly skip the check: in the first example below, 1 of 27 tokens needed it.
 - The worst case is inside a JSON string, where nearly every token is allowed and the walk visits most of the
-  tree. The performance study (the second half of M8) measures this per grammar position.
+  tree. The performance study below measures this per grammar position and finds what drives it.
 
 ```
 $ build-perf/llmi-generate models/smollm2-135m-instruct --prompt "$P" --max-new 80 --json-schema person.json
@@ -111,6 +111,46 @@ $ build-perf/llmi-generate models/smollm2-135m-instruct --prompt "$P" --max-new 
 
 (`$P` is the SmolLM2 chat format, with system prompt "You are a helpful assistant.", around "Extract the person as JSON: Maria Lopez is 34 and lives in Detroit."; `person.json` requires `name` and `city` strings of at most 40 characters and an integer `age`.)
 
+## Performance study (M8, part 2)
+
+The study asks two things: how much does constraining cost in practice, and where does that cost go. Two
+measurements answer them, both on the 2-core x86 sandbox at a clean Release build. Absolute times are specific
+to that machine and to the mix of outputs each run happens to generate; the ratios and the greedy-shortcut rate
+are the portable results.
+
+**How much it costs, end to end** ([evidence](evidence/m8-decode-overhead.txt), `tools/bench_decode_overhead.py`
+over the five schemas, using the engine's own `generate_seconds` / `mask_seconds` / `full_masks` to split each
+token's time). Against an unconstrained baseline of about 60 ms per token:
+
+| Mode | mask ms/token | full masks | the mask adds |
+|---|---|---|---|
+| Constrained, greedy | 0.5 | 47 of 419 picks | **0.8%** |
+| Constrained, sampled T=0.8 | 12.5 | 1270 of 1270 picks | **19%** |
+
+Greedy is nearly free because the greedy shortcut skips the full vocabulary mask whenever the model's own top
+token is already allowed -- about 89% of the time here. Sampling cannot skip it (top-k and top-p must operate on
+the allowed set), so it pays a full mask every token. Either way the forward pass, not the grammar, sets the
+pace.
+
+**Where the mask's time goes** ([evidence](evidence/m8-mask-profile.txt), `tools/bench_constrained.cpp`, no
+model: it drives each grammar along a valid token path on the real vocabulary and times `allowed_tokens()` at
+every step). The per-token mask cost is sharply bimodal:
+
+- At structural positions (`{`, `"`, `:`, `,`, digits, enum words) only a handful of tokens fit, so the walk
+  visits tens of trie nodes and costs about 0.04 ms -- the median mask.
+- Inside a free-form string almost every token is allowed, so the walk visits ~99,500 of the 100,298 trie
+  nodes and costs 50-62 ms. A JSON object has only a few such positions, but they dominate its total mask time.
+
+The cause is allocation, not grammar logic: the mask does **about 12 heap allocations per trie node** (the
+matcher rebuilds a full State -- a set of grammar-position stacks -- at every node of the walk), so a heavy
+free-string mask churns roughly 1.2 million allocations and 70 MB, allocated and freed, for one token.
+
+That points straight at the next optimization -- carry the State down the trie and reuse its buffers instead of
+reallocating per node -- which would cut the heavy case most. It is left as the next step rather than rushed in
+here: the mask's output must stay bit-identical (it is what the independent Earley cross-check guarantees), so
+it deserves its own change, the way M4 deferred a row-blocked GEMM ([docs/performance.md](performance.md)) and
+M5 deferred a quantized SIMD kernel ([ADR 0006](adr/0006-block-quantization-matches-gguf-no-simd-yet.md)).
+
 ## What's not here
 
 - Qwen2.5 cannot be constrained yet, because its tokenizer is still unsupported (see the README).
@@ -119,5 +159,6 @@ $ build-perf/llmi-generate models/smollm2-135m-instruct --prompt "$P" --max-new 
   optional properties. Each is rejected with an error naming it.
 - String length counts JSON characters, so a surrogate-pair escape counts as two where JSON Schema counts one
   code point.
-- The trie walk is not cached between steps. Caching which tokens are allowed per grammar position is the
-  obvious next optimization, left for the performance study to justify with numbers first.
+- The trie walk reallocates the matcher State at every node rather than reusing it down the tree. The
+  performance study above shows this is what makes a free-string mask expensive (~12 allocations per node); the
+  fix is the next optimization, kept separate because the mask output must stay bit-identical.
