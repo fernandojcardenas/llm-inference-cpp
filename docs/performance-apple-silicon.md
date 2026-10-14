@@ -3,7 +3,7 @@
 This is the M8 performance study: where single-token decoding spends its time, measured on Apple
 Silicon. It is a measurement study, in the spirit of M4 ([docs/performance.md](performance.md)) and M5
 ([docs/quantization.md](quantization.md)) — it quantifies the engine's behaviour and names the next
-optimization rather than building it.
+optimizations. Of those, the KV-cache layout one has since been built (see that section below).
 
 The numbers come from `tools/bench_apple_silicon.cpp`, which, like `tools/bench_kernels.cpp`, needs no model
 weights: it runs the real kernels on random data at the models' real shapes, so it compiles and runs anywhere
@@ -52,10 +52,11 @@ context** on Apple Silicon and reaches the machine's bandwidth where position-ma
 | 2048 | 90 MiB | 7.8 ms (12.1 GB/s) | 6.1 ms (15.5 GB/s) |
 | 4096 | 180 MiB | 16.2 ms (11.6 GB/s) | 12.0 ms (15.7 GB/s) |
 
-This is the study's concrete next optimization: re-lay the KV cache head-major. It is **identified, not built**
-— changing the layout touches the attention path in `forward_cached()` and the KV-cache tests that pin the
-current behaviour, so it is its own change, the way M4 deferred a row-blocked GEMM and M5 a quantized SIMD
-kernel. (At short context the KV read is small next to the forward pass, so this matters most for long prompts.)
+This was the study's concrete next optimization, and it has since been **built**: the engine's KV cache is now
+head-major, and `forward_cached()` reads each head contiguously. The change is bit-identical — the KV-cache
+tests (which pin `forward_cached()` to the no-cache `forward()` byte-for-byte) and an end-to-end token-identity
+check both hold, and clang-tidy and the full suite pass ([docs/evidence/m8-kv-head-major.txt](evidence/m8-kv-head-major.txt)).
+(At short context the KV read is small next to the forward pass, so this matters most for long prompts.)
 
 ## The tokenizer is not a bottleneck
 

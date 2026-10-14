@@ -227,6 +227,11 @@ Result<std::vector<float>> Transformer::forward_cached(const std::vector<TokenId
   std::vector<float> gate(T * F);
   std::vector<float> up(T * F);
   std::vector<float> scores(base + T);
+  // New positions' K/V, laid out [t][kv_head][head_dim], before they are roped
+  // and scattered into the head-major cache.
+  std::vector<float> knew(T * nkv * hd);
+  std::vector<float> vnew(T * nkv * hd);
+  const std::size_t cap = cache.capacity_;  // head-major stride: one head spans `cap` positions
   const float scale = 1.0F / std::sqrt(static_cast<float>(hd));
 
   for (std::size_t li = 0; li < layers_.size(); ++li) {
@@ -238,26 +243,39 @@ Result<std::vector<float>> Transformer::forward_cached(const std::vector<TokenId
     // positions only, appending K/V into the cache; attend over 0..base+t.
     for (std::size_t t = 0; t < T; ++t) kernels::rmsnorm(x.data() + t * H, l.attn_norm.data(), H, eps, h.data() + t * H);
     l.wq.matmul(h.data(), T, H, nh * hd, l.bq.empty() ? nullptr : l.bq.data(), q.data());
-    l.wk.matmul(h.data(), T, H, nkv * hd, l.bk.empty() ? nullptr : l.bk.data(), k_cache + base * nkv * hd);
-    l.wv.matmul(h.data(), T, H, nkv * hd, l.bv.empty() ? nullptr : l.bv.data(), v_cache + base * nkv * hd);
+    // K/V for the new positions go to temp buffers [t][kv_head][head_dim]; K is
+    // roped there, then both are scattered into the head-major cache, where one
+    // head's positions are contiguous (k_cache[(kvh*cap + pos)*hd ...]).
+    l.wk.matmul(h.data(), T, H, nkv * hd, l.bk.empty() ? nullptr : l.bk.data(), knew.data());
+    l.wv.matmul(h.data(), T, H, nkv * hd, l.bv.empty() ? nullptr : l.bv.data(), vnew.data());
     for (std::size_t t = 0; t < T; ++t) {
       for (std::size_t hh = 0; hh < nh; ++hh) kernels::rope(q.data() + (t * nh + hh) * hd, hd, base + t, inv_freq_.data());
-      for (std::size_t hh = 0; hh < nkv; ++hh) kernels::rope(k_cache + ((base + t) * nkv + hh) * hd, hd, base + t, inv_freq_.data());
+      for (std::size_t hh = 0; hh < nkv; ++hh) kernels::rope(knew.data() + (t * nkv + hh) * hd, hd, base + t, inv_freq_.data());
+    }
+    for (std::size_t t = 0; t < T; ++t) {
+      for (std::size_t kvh = 0; kvh < nkv; ++kvh) {
+        const float* ksrc = knew.data() + (t * nkv + kvh) * hd;
+        const float* vsrc = vnew.data() + (t * nkv + kvh) * hd;
+        std::copy_n(ksrc, hd, k_cache + (kvh * cap + base + t) * hd);
+        std::copy_n(vsrc, hd, v_cache + (kvh * cap + base + t) * hd);
+      }
     }
     for (std::size_t hh = 0; hh < nh; ++hh) {
       const std::size_t kvh = hh / group;  // grouped-query attention: heads share key/value heads
+      const float* kh = k_cache + kvh * cap * hd;  // this head's keys, contiguous by position
+      const float* vh = v_cache + kvh * cap * hd;
       for (std::size_t t = 0; t < T; ++t) {
         const std::size_t pos = base + t;  // global position, causal: sees 0..pos
         const float* qv = q.data() + (t * nh + hh) * hd;
         for (std::size_t s = 0; s <= pos; ++s) {
-          scores[s] = kernels::dot(qv, k_cache + (s * nkv + kvh) * hd, hd) * scale;
+          scores[s] = kernels::dot(qv, kh + s * hd, hd) * scale;
         }
         kernels::softmax(scores.data(), pos + 1);
         float* out = attn.data() + (t * nh + hh) * hd;
         std::fill_n(out, hd, 0.0F);
         for (std::size_t s = 0; s <= pos; ++s) {
           const float p = scores[s];
-          const float* vv = v_cache + (s * nkv + kvh) * hd;
+          const float* vv = vh + s * hd;
           for (std::size_t i = 0; i < hd; ++i) out[i] += p * vv[i];
         }
       }

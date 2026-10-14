@@ -14,8 +14,8 @@ layer by layer, a KV cache, sampling, an interactive chat CLI, a threaded SIMD m
 quantization, a hardened GGUF loader, and an OpenAI-compatible chat completions server). **M8 done:**
 constrained decoding (grammars and JSON Schema), its performance study and mask optimization, and an
 Apple-Silicon performance study ([docs/performance-apple-silicon.md](docs/performance-apple-silicon.md):
-decode is memory-bound, quantization awaits a SIMD dequant, a head-major KV layout is ~30% faster at long
-context). See the [roadmap](docs/roadmap.md).
+decode is memory-bound, quantization awaits a SIMD dequant, and a head-major KV layout — ~30% faster at long
+context — which the engine now uses). See the [roadmap](docs/roadmap.md).
 
 ```
 $ echo "What is the capital of France?" | build/llmi-chat models/smollm2-135m-instruct --max-new 20

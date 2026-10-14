@@ -1,0 +1,32 @@
+M8 follow-up -- adopt the head-major KV cache layout the Apple-Silicon study
+(docs/performance-apple-silicon.md, docs/evidence/m8-apple-silicon.txt) measured
+faster. The cache now stores K/V as [kv_head][position][head_dim] instead of
+[position][kv_head][head_dim], so one attention head's keys/values are
+contiguous across positions. The math is unchanged; only the memory layout and
+the read/write offsets in forward_cached() change.
+
+Base commit: 84c676a. Machine: 2 vCPU x86 sandbox (study numbers are on Apple
+Silicon arm64 -- see m8-apple-silicon.txt).
+
+CORRECTNESS (the layout must not change a single output bit):
+- Full suite 157/157 under ASan+UBSan (gcc) and under clang; the KVCache suite
+  includes the oracle that forward_cached() reproduces the no-cache forward()
+  bit-for-bit, and GenerateGreedyCachedMatchesGenerateGreedy.
+- End-to-end token identity: greedy generation through the KV-cache path
+  (head-major) produced exactly the same 60 token ids as the no-cache forward()
+  path (which CI cross-checks against PyTorch).
+- clang-tidy clean on src/model/transformer.cpp.
+
+PERFORMANCE:
+- The controlled measurement is the study's microbenchmark (same data, same
+  math, repeated, isolated attention): head-major ~25-35% faster than
+  position-major at long context on Apple Silicon, reaching memory bandwidth
+  (docs/evidence/m8-apple-silicon.txt, section 4).
+- One controlled back-to-back run on the x86 sandbox (noisy shared box, single
+  rep; decode isolated as (t[max-new=40] - t[max-new=8]) / 32 at ctx ~4096):
+    baseline (position-major)  107.6 ms/token
+    head-major                  68.8 ms/token   (~36% faster)
+  Directionally consistent with the microbenchmark; the sandbox's low memory
+  bandwidth makes attention a large share of decode there, so the end-to-end
+  effect at long context is large. Treat the microbenchmark as the number of
+  record; this is a real-model sanity check, not a precise benchmark.

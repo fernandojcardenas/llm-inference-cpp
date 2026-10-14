@@ -169,7 +169,7 @@ sharded safetensors (`model.safetensors.index.json`) for larger models.
   is most of the speed difference.
 - **Quantization** saves 3.6×/6.4× bytes but is slower than f32 (no SIMD dequant yet) on Apple Silicon too —
   the M5/ADR 0006 gap, now measured on arm64. A vectorized dequant is the top compute optimization.
-- **KV cache layout**: the engine's position-major layout runs ~25–35% slower at long context than a
-  head-major one (ctx 4096: 16.2 → 12.0 ms/token of attention). Identified next optimization, not built
-  (touches the attention path and KV-cache tests).
+- **KV cache layout**: a head-major layout runs ~25–35% faster at long context than the old position-major
+  one (ctx 4096: 16.2 → 12.0 ms/token of attention). **Built**: the engine's KV cache is now head-major,
+  bit-identical (KV-cache tests + token-identity; [m8-kv-head-major.txt](evidence/m8-kv-head-major.txt)).
 - Tokenizer ≈ 8 M tokens/s encode, 100 M/s decode — not a bottleneck.
