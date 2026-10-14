@@ -25,19 +25,54 @@ llmi-chat: models/smollm2-135m-instruct loaded. Type a message and press enter (
 
 ## Screenshots
 
-Real terminal output from an actual run on the SmolLM2-135M-Instruct model, not hand-typed:
+Every image below is real terminal output from an actual run on the SmolLM2-135M-Instruct
+model (rendered to an image, not hand-typed). Nothing here is mocked -- the same code paths
+are exercised in CI on every push.
 
-`llmi-chat`, two turns:
+**Text generation.** Loads the weights and generates text on CPU, with an optional KV cache:
+
+![llmi-generate: a text completion](docs/screenshots/llmi-generate-demo.png)
+
+**Constrained decoding (grammars / JSON Schema) -- the M8 headline.** Same prompt, run twice.
+*Without* a schema the model drifts off format: it invents an `address`/`street` the schema
+never mentions, emits chat control tokens, and runs out of budget mid-object (not valid JSON).
+*With* `--json-schema person.json` the logits are masked to the grammar at every step, so only
+the allowed fields can be produced -- valid on the first try:
+
+![llmi-generate: unconstrained vs JSON-Schema-constrained](docs/screenshots/llmi-constrained-demo.png)
+
+`llmi-grammar` prints the GBNF grammar a JSON Schema compiles to (no model needed):
+
+![llmi-grammar: a JSON Schema compiled to GBNF](docs/screenshots/llmi-grammar-demo.png)
+
+**Tokenizer.** A from-scratch byte-level BPE tokenizer, checked against Hugging Face
+`tokenizers` (`Ġ` marks a leading space; numbers split to individual digits):
+
+![llmi-tokenize: byte-level BPE](docs/screenshots/llmi-tokenize-demo.png)
+
+**Quantization (8-bit / 4-bit).** The same prompt at full precision, 8-bit and 4-bit. The
+weights shrink 3.6x and 6.4x (538 MB -> 151 MB -> 84 MB) and the model still produces coherent
+text; 4-bit loses some specificity (it drops "Paris"), as expected for a 135M model:
+
+![llmi-generate: the same prompt at q8_0 and q4_0](docs/screenshots/llmi-quant-demo.png)
+
+**Interactive chat.** `llmi-chat`, two turns:
 
 ![llmi-chat: two real turns](docs/screenshots/llmi-chat-demo.png)
 
-`llmi-server`, a health check and a non-streaming `/v1/chat/completions` request:
+**OpenAI-compatible server.** A health check and a non-streaming `/v1/chat/completions` request:
 
 ![llmi-server: health check and a chat completion](docs/screenshots/llmi-server-demo.png)
 
 The same endpoint with `"stream": true` -- one SSE `data:` chunk per generated token, then `[DONE]` (truncated here for length; the real response has one chunk per token):
 
 ![llmi-server: a streamed chat completion](docs/screenshots/llmi-server-stream-demo.png)
+
+**Everything is tested.** The full suite runs under AddressSanitizer + UBSan in CI on every
+push, cross-checked against PyTorch, Hugging Face `tokenizers`/`safetensors` and an independent
+grammar recognizer:
+
+![ctest: 157 of 157 passing](docs/screenshots/llmi-tests-demo.png)
 
 ## Why
 
