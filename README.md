@@ -11,9 +11,11 @@ bounds-checked and fuzzed.
 
 **Status: M1–M7 done** (model loading, tokenization, a forward pass that matches PyTorch
 layer by layer, a KV cache, sampling, an interactive chat CLI, a threaded SIMD matmul, 8-bit/4-bit
-quantization, a hardened GGUF loader, and an OpenAI-compatible chat completions server). **M8 in
-progress:** constrained decoding (grammars and JSON Schema) and its performance study are done. See the
-[roadmap](docs/roadmap.md).
+quantization, a hardened GGUF loader, and an OpenAI-compatible chat completions server). **M8 done:**
+constrained decoding (grammars and JSON Schema), its performance study and mask optimization, and an
+Apple-Silicon performance study ([docs/performance-apple-silicon.md](docs/performance-apple-silicon.md):
+decode is memory-bound, quantization awaits a SIMD dequant, a head-major KV layout is ~30% faster at long
+context). See the [roadmap](docs/roadmap.md).
 
 ```
 $ echo "What is the capital of France?" | build/llmi-chat models/smollm2-135m-instruct --max-new 20
@@ -319,7 +321,7 @@ src/            implementation; src/tokenizer/unicode_tables.inc is generated fr
 apps/           llmi-inspect, llmi-gguf-inspect, llmi-tokenize, llmi-generate, llmi-chat, llmi-chat-template, llmi-perplexity, llmi-server, llmi-grammar
 tests/          unit tests
 fuzz/           libFuzzer targets
-tools/          model download, cross-checks (incl. an independent Earley grammar recognizer), constrained-JSON evaluation, Unicode table generator and probe, fuzz seeds, matmul and constrained-mask microbenchmarks, decode-overhead benchmark, perplexity-eval token ids, server load test
+tools/          model download, cross-checks (incl. an independent Earley grammar recognizer), constrained-JSON evaluation, Unicode table generator and probe, fuzz seeds, matmul and constrained-mask microbenchmarks, decode-overhead and Apple-Silicon studies, perplexity-eval token ids, server load test
 testdata/       tokenizer.json/config.json/tokenizer_config.json for the three models (Apache 2.0)
 third_party/    vendored cpp-httplib (MIT) -- this engine's HTTP transport, see THIRD-PARTY.md
 docs/           roadmap, tokenizer, forward-pass, KV cache, sampling, chat-template, quantization, GGUF, server and constrained-decoding

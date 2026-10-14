@@ -13,7 +13,7 @@ Target dates assume about eight hours a week.
 | **M5 Quantization** | 8-bit and 4-bit block formats; quality loss measured by perplexity against the full-precision model and llama.cpp; speed and memory table | Mar 2027 | ✅ Done (Oct 2026) |
 | **M6 Hardened GGUF loader** | Read GGUF v3 models with every size and offset checked, fuzzed, with a regression set of malformed files and a threat model for loading untrusted model files | Apr 2027 | ✅ Done (Oct 2026) |
 | **M7 Server** | OpenAI-compatible chat completions API with streaming, request limits, localhost by default, Docker image, load test | May–Jun 2027 | ✅ Done (Oct 2026) |
-| **M8 Constrained decoding and performance study** | Generation constrained to a grammar or JSON schema, with tests that every constrained output parses; a measured performance study on Apple Silicon: tokenizer throughput, Q8_0/Q4_0 against higher precision, a memory-bandwidth roofline and KV-cache layout | Apr–May 2027 | 🔨 In progress: constrained decoding, its performance study, and the masking optimization done (Oct 2026); the broader Apple-Silicon study (tokenizer throughput, quantization roofline, KV-cache layout) still to do |
+| **M8 Constrained decoding and performance study** | Generation constrained to a grammar or JSON schema, with tests that every constrained output parses; a measured performance study on Apple Silicon: tokenizer throughput, Q8_0/Q4_0 against higher precision, a memory-bandwidth roofline and KV-cache layout | Apr–May 2027 | ✅ Done (Oct 2026): constrained decoding, its performance study, the masking optimization, and the Apple-Silicon study (tokenizer throughput, memory-bandwidth roofline, quantization, KV-cache layout) |
 
 Also planned: Qwen2.5's tokenizer (NFC normalization and its split pattern), so Qwen models run end to end;
 sharded safetensors (`model.safetensors.index.json`) for larger models.
@@ -157,3 +157,19 @@ sharded safetensors (`model.safetensors.index.json`) for larger models.
 - Masks are bit-identical to the old walk: a unit test and an independent driver over the real vocabulary
   (under ASan+UBSan) agree 0-for-0, and the real-model constrained-JSON eval still reports every output valid.
 - Details: [constrained-decoding.md](constrained-decoding.md#the-optimization-m8-part-3).
+
+## M8 results (Apple-Silicon performance study)
+
+- Where single-token decoding spends time, measured on Apple Silicon (arm64 NEON) and x86 (AVX2) with no model
+  weights (`tools/bench_apple_silicon.cpp`, random data at real shapes). Details:
+  [performance-apple-silicon.md](performance-apple-silicon.md); evidence
+  [m8-apple-silicon.txt](evidence/m8-apple-silicon.txt).
+- Decode is **memory-bound** (0.5 FLOP/byte): on Apple Silicon the cache-busting lm_head matmul runs at the
+  machine's full ~76 GB/s and 37.8 GFLOP/s (= 76 × 0.5). The ~76-vs-~10 GB/s bandwidth gap to the x86 sandbox
+  is most of the speed difference.
+- **Quantization** saves 3.6×/6.4× bytes but is slower than f32 (no SIMD dequant yet) on Apple Silicon too —
+  the M5/ADR 0006 gap, now measured on arm64. A vectorized dequant is the top compute optimization.
+- **KV cache layout**: the engine's position-major layout runs ~25–35% slower at long context than a
+  head-major one (ctx 4096: 16.2 → 12.0 ms/token of attention). Identified next optimization, not built
+  (touches the attention path and KV-cache tests).
+- Tokenizer ≈ 8 M tokens/s encode, 100 M/s decode — not a bottleneck.

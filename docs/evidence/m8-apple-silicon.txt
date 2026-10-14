@@ -1,0 +1,136 @@
+M8 performance study on Apple Silicon (and x86 for comparison). Microbenchmarks of where
+single-token decoding spends time, with no model weights -- random data at the models' real
+shapes, like tools/bench_kernels.cpp -- so it runs wherever the engine compiles.
+tools/bench_apple_silicon.cpp.
+
+Apple Silicon run: an arm64 Linux VM on Fernando's Apple Silicon Mac (Vendor ID Apple, 4 cores),
+g++ 11.4, the engine's NEON kernels. Not macOS/Metal: CPU inference only, which is what this
+engine does. x86 run: the 2-core cloud sandbox, AVX2 (-mavx2 -mfma), for cross-architecture
+comparison. Commit base c585cdb. Single-threaded. Absolute numbers are per machine; the shapes
+of the results (memory-bound decode, quant compute-bound without SIMD dequant, KV layout) hold
+on both.
+
+Reproduce:
+  g++ -O3 -std=c++20 -I include tools/bench_apple_silicon.cpp src/model/kernels.cpp \
+      src/model/quant.cpp src/util/thread_pool.cpp src/tokenizer/tokenizer.cpp \
+      src/util/json.cpp src/util/utf8.cpp -pthread -o bench_apple_silicon
+  ./bench_apple_silicon testdata/smollm2-135m/tokenizer.json
+  (add -mavx2 -mfma on x86 to match the engine's CI build; arm64 needs no flag -- NEON is base.)
+
+================================================================================
+APPLE SILICON (arm64 Linux VM on the Mac, NEON)
+================================================================================
+arch: aarch64 (NEON). A single-threaded study of where single-token decoding spends time.
+
+== 1. Memory bandwidth (STREAM triad a = b + s*c) ==
+  arrays 33554432 floats (134 MB each); 4.0 GB moved in 0.053 s => 76.2 GB/s (single thread)
+
+== 2. Matmul at SmolLM2-135M decode shapes (rows=1), F32 vs quantized ==
+  attn qkv/o  576x576         (576x576)
+      f32      0.0826 ms      8.0 GFLOP/s     16.1 GB/s  weight    1.27 MiB
+      q8_0     0.1172 ms      5.7 GFLOP/s      3.2 GB/s  weight    0.36 MiB
+      q4_0     0.1427 ms      4.6 GFLOP/s      1.5 GB/s  weight    0.20 MiB
+  mlp up/gate 576x1536        (1536x576)
+      f32      0.1053 ms     16.8 GFLOP/s     33.6 GB/s  weight    3.38 MiB
+      q8_0     0.2094 ms      8.5 GFLOP/s      4.8 GB/s  weight    0.95 MiB
+      q4_0     0.2478 ms      7.1 GFLOP/s      2.2 GB/s  weight    0.53 MiB
+  mlp down    1536x576        (576x1536)
+      f32      0.1183 ms     15.0 GFLOP/s     29.9 GB/s  weight    3.38 MiB
+      q8_0     0.2011 ms      8.8 GFLOP/s      4.9 GB/s  weight    0.95 MiB
+      q4_0     0.2323 ms      7.6 GFLOP/s      2.4 GB/s  weight    0.53 MiB
+  lm_head     576x49152       (49152x576)
+      f32      1.4995 ms     37.8 GFLOP/s     75.5 GB/s  weight  108.00 MiB
+      q8_0     3.3977 ms     16.7 GFLOP/s      9.4 GB/s  weight   30.38 MiB
+      q4_0     4.7896 ms     11.8 GFLOP/s      3.7 GB/s  weight   16.88 MiB
+
+== 3. Roofline ==
+  Arithmetic intensity 0.5 FLOP/byte (f32); deeply memory bound. lm_head (108 MiB, cache-busting)
+  ran at 75.5 GB/s and 37.8 GFLOP/s = 75.5 x 0.5, i.e. reading weights at the full ~76 GB/s the
+  triad measured. The flops are free; decode is bound by reading the weights. Smaller per-layer
+  matmuls show higher GB/s only because a few-MiB weight partly fits in cache.
+
+== 4. KV cache read cost per decode step, and the effect of its layout ==
+  ctx   128: KV read    5.6 MiB/token | position-major   0.367 ms ( 16.1 GB/s) | head-major   0.354 ms ( 16.6 GB/s)
+  ctx   512: KV read   22.5 MiB/token | position-major   1.949 ms ( 12.1 GB/s) | head-major   1.516 ms ( 15.6 GB/s)
+  ctx  1024: KV read   45.0 MiB/token | position-major   3.909 ms ( 12.1 GB/s) | head-major   3.001 ms ( 15.7 GB/s)
+  ctx  2048: KV read   90.0 MiB/token | position-major   7.809 ms ( 12.1 GB/s) | head-major   6.078 ms ( 15.5 GB/s)
+  ctx  4096: KV read  180.0 MiB/token | position-major  16.207 ms ( 11.6 GB/s) | head-major  12.041 ms ( 15.7 GB/s)
+
+== 5. Tokenizer throughput ==
+  encode: 4.19 MB -> 1567335 tokens in 0.193 s => 21.7 MB/s, 8.12 M tokens/s
+  decode: 1567335 tokens -> 4.19 MB in 0.015 s => 102.86 M tokens/s (round-trip exact)
+
+================================================================================
+x86 (2-core cloud sandbox, AVX2) -- for comparison
+================================================================================
+arch: x86_64. A single-threaded study of where single-token decoding spends time.
+
+== 1. Memory bandwidth (STREAM triad a = b + s*c) ==
+  arrays 33554432 floats (134 MB each); 4.0 GB moved in 0.449 s => 9.0 GB/s (single thread)
+
+== 2. Matmul at SmolLM2-135M decode shapes (rows=1), F32 vs quantized ==
+   (GB/s = weight bytes read / time; f32 should sit near the bandwidth ceiling, the quantized
+    kernels move fewer bytes but have no SIMD dequant yet, so they are compute-bound -- M5/ADR 0006)
+  attn qkv/o  576x576         (576x576)
+      f32      0.0771 ms      8.6 GFLOP/s     17.2 GB/s  weight    1.27 MiB
+      q8_0     0.2318 ms      2.9 GFLOP/s      1.6 GB/s  weight    0.36 MiB
+      q4_0     0.5419 ms      1.2 GFLOP/s      0.4 GB/s  weight    0.20 MiB
+  mlp up/gate 576x1536        (1536x576)
+      f32      0.1411 ms     12.5 GFLOP/s     25.1 GB/s  weight    3.38 MiB
+      q8_0     0.6415 ms      2.8 GFLOP/s      1.6 GB/s  weight    0.95 MiB
+      q4_0     1.3843 ms      1.3 GFLOP/s      0.4 GB/s  weight    0.53 MiB
+  mlp down    1536x576        (576x1536)
+      f32      0.1641 ms     10.8 GFLOP/s     21.6 GB/s  weight    3.38 MiB
+      q8_0     0.6453 ms      2.7 GFLOP/s      1.5 GB/s  weight    0.95 MiB
+      q4_0     1.4766 ms      1.2 GFLOP/s      0.4 GB/s  weight    0.53 MiB
+  lm_head     576x49152       (49152x576)
+      f32      9.2267 ms      6.1 GFLOP/s     12.3 GB/s  weight  108.00 MiB
+      q8_0    17.5789 ms      3.2 GFLOP/s      1.8 GB/s  weight   30.38 MiB
+      q4_0    42.3107 ms      1.3 GFLOP/s      0.4 GB/s  weight   16.88 MiB
+
+== 3. Roofline for single-token (rows=1) decode matmul ==
+   Each weight is read once and used for two flops (a multiply and an add): arithmetic intensity
+   2 flops / 4 bytes = 0.5 FLOP/byte for f32, far below any ridge point -- deeply memory bound.
+   The triad above (~8 GB/s) is copy bandwidth; the honest read-bandwidth anchor is the
+   lm_head matmul, whose 108 MiB of weights cannot fit in cache: it ran at 12.3 GB/s and
+   6.1 GFLOP/s, and 12.3 x 0.5 = 6.1, so it is reading weights at full bandwidth and the flops
+   come for free -- textbook memory-bound. The small per-layer matmuls above report higher GB/s
+   only because a few-MiB weight partly fits in cache. The lever is moving fewer weight bytes
+   (quantization); it pays off once its dequant is vectorized (section 2 shows it is not yet).
+
+== 4. KV cache read cost per decode step, and the effect of its layout ==
+   SmolLM2-135M: 30 layers, 3 KV heads x 64 = 192 floats of K and 192 of V per position per
+   layer. A step reads all past K and V once. The engine stores them position-major
+   ([position][kv_head][head_dim]); head-major ([kv_head][position][head_dim]) makes one
+   head's keys contiguous across positions. Same data, same math, different layout:
+  ctx   128: KV read    5.6 MiB/token | position-major   1.239 ms (  4.8 GB/s) | head-major   0.765 ms (  7.7 GB/s)
+  ctx   512: KV read   22.5 MiB/token | position-major   3.012 ms (  7.8 GB/s) | head-major   2.808 ms (  8.4 GB/s)
+  ctx  1024: KV read   45.0 MiB/token | position-major   8.632 ms (  5.5 GB/s) | head-major   6.532 ms (  7.2 GB/s)
+  ctx  2048: KV read   90.0 MiB/token | position-major  26.822 ms (  3.5 GB/s) | head-major  14.916 ms (  6.3 GB/s)
+  ctx  4096: KV read  180.0 MiB/token | position-major  48.823 ms (  3.9 GB/s) | head-major  34.060 ms (  5.5 GB/s)
+
+== 5. Tokenizer throughput ==
+  encode: 4.19 MB -> 1567335 tokens in 0.266 s => 15.8 MB/s, 5.90 M tokens/s
+  decode: 1567335 tokens -> 4.19 MB in 0.119 s => 13.13 M tokens/s (round-trip exact)
+
+================================================================================
+Reading this
+================================================================================
+- Memory-bound decoding. Generating one token at a time is a series of matrix-by-vector
+  products: each weight is read once for two flops, 0.5 FLOP/byte. The cache-busting lm_head
+  confirms it -- on Apple Silicon it runs at the machine's full ~76 GB/s and exactly 0.5x that
+  in GFLOP/s. So single-token throughput is set by how fast weights are read, which is why
+  memory bandwidth (76 GB/s on the Mac vs ~10 on the x86 sandbox) tracks the speed difference.
+- Quantization. Q8_0/Q4_0 move 3.6x/6.4x fewer weight bytes, so on a memory-bound workload they
+  *should* be faster -- but the engine's dequant has no SIMD yet, so the quantized kernels are
+  compute-bound and run slower than f32 on both machines (lm_head f32 1.50 ms vs q8_0 3.40 ms on
+  arm64). This is the same honest gap M5/ADR 0006 documented, now measured on Apple Silicon: the
+  memory saving is real, the speed-up waits on a vectorized dequant.
+- KV cache layout. The engine stores K/V position-major ([position][kv_head][head_dim]); one
+  head's keys are then strided across memory. A head-major layout ([kv_head][position][head_dim])
+  reads each head contiguously and runs ~25-35% faster at long context on Apple Silicon (ctx
+  4096: 16.2 ms vs 12.0 ms per token of attention), reaching the machine's bandwidth. That is a
+  concrete next optimization, left identified not built -- changing the layout touches the
+  attention path and the KV cache tests.
+- Tokenizer. 8 M tokens/s encode, 100 M/s decode on Apple Silicon -- nowhere near the bottleneck;
+  the forward pass dominates.
