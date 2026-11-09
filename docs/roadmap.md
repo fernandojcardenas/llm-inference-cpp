@@ -15,8 +15,12 @@ Target dates assume about eight hours a week.
 | **M7 Server** | OpenAI-compatible chat completions API with streaming, request limits, localhost by default, Docker image, load test | May–Jun 2027 | ✅ Done (Oct 2026) |
 | **M8 Constrained decoding and performance study** | Generation constrained to a grammar or JSON schema, with tests that every constrained output parses; a measured performance study on Apple Silicon: tokenizer throughput, Q8_0/Q4_0 against higher precision, a memory-bandwidth roofline and KV-cache layout | Apr–May 2027 | ✅ Done (Oct 2026): constrained decoding, its performance study, the masking optimization, and the Apple-Silicon study (tokenizer throughput, memory-bandwidth roofline, quantization, KV-cache layout) |
 
-Also planned: Qwen2.5's tokenizer (NFC normalization and its split pattern), so Qwen models run end to end;
-sharded safetensors (`model.safetensors.index.json`) for larger models.
+Beyond the milestones:
+
+- **Sharded safetensors** (`model.safetensors.index.json`), so models too large for one file load
+  and run end to end. ✅ Done (see below).
+- Qwen2.5's tokenizer (NFC normalization and its split pattern), so Qwen models run end to end.
+  Planned.
 
 ## M1 results
 
@@ -173,3 +177,18 @@ sharded safetensors (`model.safetensors.index.json`) for larger models.
   one (ctx 4096: 16.2 → 12.0 ms/token of attention). **Built**: the engine's KV cache is now head-major,
   bit-identical (KV-cache tests + token-identity; [m8-kv-head-major.txt](evidence/m8-kv-head-major.txt)).
 - Tokenizer ≈ 8 M tokens/s encode, 100 M/s decode — not a bottleneck.
+
+## Sharded safetensors
+
+- A model directory with no `model.safetensors` but a `model.safetensors.index.json` now loads:
+  the index names which shard holds each tensor, the shards are opened and assembled into one
+  by-name view, and the forward pass is unchanged. Single-file loading still takes precedence
+  ([docs/safetensors-index.md](safetensors-index.md), [ADR 0010](adr/0010-sharded-safetensors.md)).
+- Checked against a reference, the project's own standard: the same tiny model written once as a
+  single file and once split across two shards loads to **byte-identical weights and bit-identical
+  logits** (`tests/sharded_model_test.cpp`). The index parser is hardened like every other
+  untrusted-input reader (ADR 0001) -- shard filenames are validated as plain in-directory names
+  before any file is opened (no `..`, no path separators, `.safetensors` only), the index and the
+  shards must describe exactly the same tensors, with hardening unit tests
+  (`tests/safetensors_index_test.cpp`) and a libFuzzer target. Local run:
+  [evidence](evidence/sharded-safetensors.txt).

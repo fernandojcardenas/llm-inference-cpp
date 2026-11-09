@@ -248,9 +248,11 @@ results, just faster; see their own sections above.
 - **Model loader.** Reads Hugging Face `config.json` and `model.safetensors`, memory-maps the weights (nothing
   is copied), and checks every tensor against the architecture: 272 tensors for SmolLM2-135M, 290 for
   Qwen2.5-0.5B, each present with the right shape and a float dtype, nothing unexpected. Llama and Qwen2
-  layouts (grouped-query attention, optional q/k/v bias, tied embeddings).
-- **Hardened file parsing.** The safetensors header and both JSON files go through the engine's own
-  strict parser. It rejects offsets out of bounds, overlapping tensors, holes in the data section, sizes that
+  layouts (grouped-query attention, optional q/k/v bias, tied embeddings). Models too large for one file
+  are read from a `model.safetensors.index.json` and their shards, with the index and the shards
+  cross-checked to describe exactly the same tensors ([docs/safetensors-index.md](docs/safetensors-index.md)).
+- **Hardened file parsing.** The safetensors header and the JSON files (`config.json`, `tokenizer.json`
+  and, for sharded models, the safetensors index) go through the engine's own strict parser. It rejects offsets out of bounds, overlapping tensors, holes in the data section, sizes that
   don't match dtype × shape (checked without integer overflow), duplicate keys, invalid UTF-8 and excessive
   nesting. Unsupported model features (RoPE scaling, other architectures) are errors, never silently ignored.
 - **Byte-level BPE tokenizer.** Reads `tokenizer.json`: special tokens, digit splitting, the GPT-2
@@ -287,7 +289,7 @@ Getting to exact agreement found two things the reference does that are easy to 
 
 | Check | What it proves | Where |
 |---|---|---|
-| 157 unit tests (GoogleTest) | UTF-8 edge cases; JSON grammar, escapes, exact 64-bit integers, depth and size limits; every safetensors rejection rule, including shapes that overflow 64 bits; float conversion (F32, F16 incl. subnormals and infinity, BF16); config validation; weight-layout checks; known token ids from the reference; round trips; dropped bytes; every kernel against hand-worked or double-precision values (RoPE scores depend only on relative position); on a small random model of each architecture: causality, determinism, tracing, bad input, stop tokens, and the KV cache reproducing the no-cache baseline; sampling's filtering checked against a plain softmax; the chat template engine's control flow and whitespace handling; the thread pool's chunking (every index covered exactly once, any worker count) and matmul's threaded output bit-for-bit against a row-by-row reference; Q8_0/Q4_0 round-trip error bounds (including the exact-reconstruction case for a block's extreme value) and quantized matmul against a dequantize-then-dot reference; a quantized whole-model forward pass staying close to float32 and picking the same argmax; every GGUF rejection rule (truncation at every header stage, overflow, nested arrays, bad alignment, overlapping tensors, duplicate keys/names) and its Q8_0/Q4_0 conversion, including the hand-computed Q4_0 half-block-pairing case; the server's request validation and a real HTTP round trip; grammar parsing and its limits, matching (including UTF-8 characters split across tokens), the token mask against checking each token alone and the memoized walk against the direct one, every JSON Schema rule, and a random-weight model returning schema-valid JSON through the server | `tests/` |
+| 166 unit tests (GoogleTest) | UTF-8 edge cases; JSON grammar, escapes, exact 64-bit integers, depth and size limits; every safetensors rejection rule, including shapes that overflow 64 bits; the safetensors index's filename-safety and index/shard-agreement rules, and a model split across two shards loading to byte-identical weights and bit-identical logits as the same single-file model; float conversion (F32, F16 incl. subnormals and infinity, BF16); config validation; weight-layout checks; known token ids from the reference; round trips; dropped bytes; every kernel against hand-worked or double-precision values (RoPE scores depend only on relative position); on a small random model of each architecture: causality, determinism, tracing, bad input, stop tokens, and the KV cache reproducing the no-cache baseline; sampling's filtering checked against a plain softmax; the chat template engine's control flow and whitespace handling; the thread pool's chunking (every index covered exactly once, any worker count) and matmul's threaded output bit-for-bit against a row-by-row reference; Q8_0/Q4_0 round-trip error bounds (including the exact-reconstruction case for a block's extreme value) and quantized matmul against a dequantize-then-dot reference; a quantized whole-model forward pass staying close to float32 and picking the same argmax; every GGUF rejection rule (truncation at every header stage, overflow, nested arrays, bad alignment, overlapping tensors, duplicate keys/names) and its Q8_0/Q4_0 conversion, including the hand-computed Q4_0 half-block-pairing case; the server's request validation and a real HTTP round trip; grammar parsing and its limits, matching (including UTF-8 characters split across tokens), the token mask against checking each token alone and the memoized walk against the direct one, every JSON Schema rule, and a random-weight model returning schema-valid JSON through the server | `tests/` |
 | Forward-pass cross-check | Every layer within 1e-4 of PyTorch and greedy tokens identical, on two architectures | `tools/crosscheck_forward.py`, CI `forward` job |
 | Tokenizer cross-check | Identical token ids to Hugging Face on 4.5 million inputs | `tools/crosscheck_tokenizer.py`, CI `crosscheck` job |
 | Weight cross-check | Every tensor of two models read exactly as PyTorch reads it | `tools/crosscheck_weights.py`, CI `crosscheck` job |
@@ -296,7 +298,7 @@ Getting to exact agreement found two things the reference does that are easy to 
 | Constrained JSON on a real model | Every constrained output of SmolLM2-135M-Instruct is valid against its schema, judged by `jsonschema` | `tools/eval_constrained_json.py`, CI `grammar` job |
 | ASan + UBSan | No memory errors or undefined behaviour, with GCC and Clang | CI `test` job |
 | macOS arm64 | Builds and passes with Apple Clang, the target laptop platform | CI `macos` job |
-| Seven libFuzzer targets | Arbitrary bytes into the JSON parser, the safetensors parser (output must tile the input exactly), the GGUF parser (offsets/sizes stay in bounds, alignment stays a power of two, no array-of-arrays accepted), the config and tokenizer loaders, encode/decode (valid UTF-8 must round-trip), the server's request parser (accepted requests obey the limits), and grammars, text and JSON Schemas (the matcher's answers agree with each other; every converted schema parses) | `fuzz/`, CI `fuzz` job |
+| Eight libFuzzer targets | Arbitrary bytes into the JSON parser, the safetensors parser (output must tile the input exactly), the safetensors index parser (accepted indexes carry only safe in-directory filenames), the GGUF parser (offsets/sizes stay in bounds, alignment stays a power of two, no array-of-arrays accepted), the config and tokenizer loaders, encode/decode (valid UTF-8 must round-trip), the server's request parser (accepted requests obey the limits), and grammars, text and JSON Schemas (the matcher's answers agree with each other; every converted schema parses) | `fuzz/`, CI `fuzz` job |
 | clang-tidy | bugprone, cert, performance, modernize and readability checks, warnings as errors | `.clang-tidy`, CI `lint` job |
 
 ## Build
@@ -351,7 +353,7 @@ see the commands at the top of each file in `docs/evidence/`.
 ## Layout
 
 ```
-include/llmi/   public headers: util/ (JSON, UTF-8, Result, thread pool), model/ (safetensors, gguf, config, kernels, quant, weight, transformer, sampling), tokenizer/, chat/ (template), grammar/ (GBNF parser, matcher, JSON Schema, constraint), server/ (request, response, server)
+include/llmi/   public headers: util/ (JSON, UTF-8, Result, thread pool), model/ (safetensors, safetensors index, weights, gguf, config, kernels, quant, weight, transformer, sampling), tokenizer/, chat/ (template), grammar/ (GBNF parser, matcher, JSON Schema, constraint), server/ (request, response, server)
 src/            implementation; src/tokenizer/unicode_tables.inc is generated from the Unicode database
 apps/           llmi-inspect, llmi-gguf-inspect, llmi-tokenize, llmi-generate, llmi-chat, llmi-chat-template, llmi-perplexity, llmi-server, llmi-grammar
 tests/          unit tests
@@ -359,7 +361,7 @@ fuzz/           libFuzzer targets
 tools/          model download, cross-checks (incl. an independent Earley grammar recognizer), constrained-JSON evaluation, Unicode table generator and probe, fuzz seeds, matmul and constrained-mask microbenchmarks, decode-overhead and Apple-Silicon studies, perplexity-eval token ids, server load test
 testdata/       tokenizer.json/config.json/tokenizer_config.json for the three models (Apache 2.0)
 third_party/    vendored cpp-httplib (MIT) -- this engine's HTTP transport, see THIRD-PARTY.md
-docs/           roadmap, tokenizer, forward-pass, KV cache, sampling, chat-template, quantization, GGUF, server and constrained-decoding
+docs/           roadmap, tokenizer, forward-pass, KV cache, sampling, chat-template, quantization, GGUF, sharded safetensors, server and constrained-decoding
                 notes, a GGUF threat model, architecture
                 decisions, evidence from real runs
 ```

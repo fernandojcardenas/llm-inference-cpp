@@ -1,0 +1,39 @@
+Sharded safetensors (model.safetensors.index.json) -- local evidence
+Generated on: 2026-11-09T16:10:09Z (gcc 13, ASan+UBSan, x86_64)
+
+## Unit + reference tests (ctest)
+
+Running main() from /home/claude/llm-inference-cpp/build-gcc/_deps/googletest-src/googletest/src/gtest_main.cc
+Note: Google Test filter = SafetensorsIndex.*:ShardedModel.*
+[==========] Running 9 tests from 2 test suites.
+[----------] Global test environment set-up.
+[----------] 6 tests from SafetensorsIndex
+[ RUN      ] SafetensorsIndex.ParsesAValidIndex
+[       OK ] SafetensorsIndex.ParsesAValidIndex (0 ms)
+[ RUN      ] SafetensorsIndex.MetadataIsOptionalButMustBeAnObject
+[       OK ] SafetensorsIndex.MetadataIsOptionalButMustBeAnObject (0 ms)
+[ RUN      ] SafetensorsIndex.RejectsStructuralProblems
+[       OK ] SafetensorsIndex.RejectsStructuralProblems (0 ms)
+[ RUN      ] SafetensorsIndex.RejectsUnsafeShardFilenames
+[       OK ] SafetensorsIndex.RejectsUnsafeShardFilenames (0 ms)
+[ RUN      ] SafetensorsIndex.IsSafeShardFilenameDirectly
+[       OK ] SafetensorsIndex.IsSafeShardFilenameDirectly (0 ms)
+[ RUN      ] SafetensorsIndex.EnforcesLimits
+[       OK ] SafetensorsIndex.EnforcesLimits (0 ms)
+[----------] 6 tests from SafetensorsIndex (2 ms total)
+
+[----------] 3 tests from ShardedModel
+[ RUN      ] ShardedModel.LoadsIdenticallyToASingleFile
+[       OK ] ShardedModel.LoadsIdenticallyToASingleFile (10 ms)
+[ RUN      ] ShardedModel.RejectsIndexAndShardsThatDisagree
+[       OK ] ShardedModel.RejectsIndexAndShardsThatDisagree (6 ms)
+[ RUN      ] ShardedModel.RejectsAMissingShardFileAndAnEmptyDir
+[       OK ] ShardedModel.RejectsAMissingShardFileAndAnEmptyDir (3 ms)
+[----------] 3 tests from ShardedModel (19 ms total)
+
+[----------] Global test environment tear-down
+[==========] 9 tests from 2 test suites ran. (22 ms total)
+[  PASSED  ] 9 tests.
+
+## ASan/UBSan smoke over the index parser (seeds + ~460,000 mutated/random inputs)
+smoke OK: no crash / sanitizer report

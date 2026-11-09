@@ -2,14 +2,27 @@
 
 #include <fstream>
 #include <limits>
+#include <map>
 #include <optional>
 #include <set>
 #include <sstream>
 #include <utility>
+#include <vector>
 
+#include "llmi/model/safetensors_index.hpp"
+#include "llmi/model/weights.hpp"
 #include "llmi/util/json.hpp"
 
 namespace llmi {
+
+namespace {
+
+bool file_exists(const std::string& path) {
+  const std::ifstream in(path, std::ios::binary);
+  return in.good();
+}
+
+}  // namespace
 
 std::string_view arch_name(Arch a) {
   switch (a) {
@@ -175,6 +188,10 @@ std::string shape_str(const std::vector<std::uint64_t>& s) {
 }  // namespace
 
 Result<Model> Model::from_parts(ModelConfig cfg, SafetensorsFile weights) {
+  return from_parts(std::move(cfg), Weights::single(std::move(weights)));
+}
+
+Result<Model> Model::from_parts(ModelConfig cfg, Weights weights) {
   std::set<std::string> expected_names;
   for (const auto& e : expected_tensors(cfg)) {
     const TensorInfo* t = weights.find(e.name);
@@ -213,14 +230,70 @@ Result<std::string> read_file(const std::string& path, std::size_t max_bytes) {
   return data;
 }
 
+// Reads model.safetensors.index.json, opens every shard it names, and checks
+// that the index and the shards describe exactly the same tensors: each
+// weight_map entry is present in the shard it points to, and every tensor in
+// every shard is attributed to that same shard by the index. Either mismatch
+// means the download is inconsistent, so it is an error, not a silent merge.
+Result<Weights> load_sharded(const std::string& dir) {
+  auto text = read_file(dir + "/model.safetensors.index.json", 64U << 20U);
+  if (!text) return fail(text.error());
+  auto index = SafetensorsIndex::parse(text.value());
+  if (!index) return fail(dir + "/model.safetensors.index.json: " + index.error());
+
+  std::vector<SafetensorsFile> shards;
+  std::map<std::string, std::size_t> shard_pos;  // filename -> index into shards
+  for (const std::string& name : index->shards()) {
+    std::string path = dir + "/";
+    path += name;
+    auto f = SafetensorsFile::open(path);
+    if (!f) return fail(f.error());
+    shard_pos.emplace(name, shards.size());
+    shards.push_back(std::move(f.value()));
+  }
+
+  // Every tensor the index promises is in the shard the index names.
+  for (const auto& [tensor, file] : index->weight_map()) {
+    if (shards[shard_pos.at(file)].find(tensor) == nullptr) {
+      std::string msg = "model: index lists tensor \"";
+      msg.append(tensor).append("\" in ").append(file).append(", but it is not there");
+      return fail(msg);
+    }
+  }
+  // Every tensor a shard actually holds is attributed to that shard by the index.
+  for (const std::string& name : index->shards()) {
+    const SafetensorsFile& shard = shards[shard_pos.at(name)];
+    for (const auto& t : shard.tensors()) {
+      auto it = index->weight_map().find(t.name);
+      if (it == index->weight_map().end() || it->second != name) {
+        std::string msg = "model: shard ";
+        msg.append(name).append(" holds tensor \"").append(t.name).append("\", which the index does not list there");
+        return fail(msg);
+      }
+    }
+  }
+  return Weights::sharded(std::move(shards));
+}
+
 Result<Model> Model::load(const std::string& dir) {
   auto text = read_file(dir + "/config.json", 1U << 20U);
   if (!text) return fail(text.error());
   auto cfg = parse_config(text.value());
   if (!cfg) return fail(dir + "/config.json: " + cfg.error());
-  auto weights = SafetensorsFile::open(dir + "/model.safetensors");
-  if (!weights) return fail(weights.error());
-  return from_parts(cfg.value(), std::move(weights.value()));
+
+  // A single-file model takes precedence; a corrupt model.safetensors is a
+  // real error, never a reason to fall back to an index that may not exist.
+  if (file_exists(dir + "/model.safetensors")) {
+    auto weights = SafetensorsFile::open(dir + "/model.safetensors");
+    if (!weights) return fail(weights.error());
+    return from_parts(cfg.value(), std::move(weights.value()));
+  }
+  if (file_exists(dir + "/model.safetensors.index.json")) {
+    auto weights = load_sharded(dir);
+    if (!weights) return fail(weights.error());
+    return from_parts(cfg.value(), std::move(weights.value()));
+  }
+  return fail("model: " + dir + " has neither model.safetensors nor model.safetensors.index.json");
 }
 
 std::uint64_t Model::parameter_count() const {

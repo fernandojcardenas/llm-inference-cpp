@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "llmi/model/safetensors.hpp"
+#include "llmi/model/weights.hpp"
 #include "llmi/util/result.hpp"
 
 namespace llmi {
@@ -49,22 +50,26 @@ struct ExpectedTensor {
 // Every tensor the forward pass will read, in a fixed order.
 std::vector<ExpectedTensor> expected_tensors(const ModelConfig& cfg);
 
-// A model directory: config.json + model.safetensors, checked against each
-// other: every expected tensor present with the right shape and a float
-// dtype, and no unexpected tensors.
+// A model directory, checked against its config.json: every expected tensor
+// present with the right shape and a float dtype, and no unexpected tensors.
+// The weights come from either a single model.safetensors or, for models too
+// large for one file, a model.safetensors.index.json naming several shards
+// (see Model::load).
 class Model {
  public:
   static Result<Model> load(const std::string& dir);
-  // For tests and fuzzing: check an already-parsed file against a config.
+  // For tests and fuzzing: check an already-parsed single file against a config.
   static Result<Model> from_parts(ModelConfig cfg, SafetensorsFile weights);
+  // The same check over weights already assembled from one or more shards.
+  static Result<Model> from_parts(ModelConfig cfg, Weights weights);
 
   [[nodiscard]] const ModelConfig& config() const { return cfg_; }
-  [[nodiscard]] const SafetensorsFile& weights() const { return weights_; }
+  [[nodiscard]] const Weights& weights() const { return weights_; }
   [[nodiscard]] std::uint64_t parameter_count() const;
 
  private:
   ModelConfig cfg_;
-  SafetensorsFile weights_;
+  Weights weights_;
 };
 
 Result<std::string> read_file(const std::string& path, std::size_t max_bytes);

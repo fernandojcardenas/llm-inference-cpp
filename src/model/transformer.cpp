@@ -9,7 +9,7 @@ namespace llmi {
 
 namespace {
 
-std::vector<float> to_f32(const SafetensorsFile& w, const std::string& name) {
+std::vector<float> to_f32(const Weights& w, const std::string& name) {
   const TensorInfo* t = w.find(name);  // presence and shape were checked by Model
   const auto raw = w.data(*t);
   std::vector<float> out(static_cast<std::size_t>(t->numel()));

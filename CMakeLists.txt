@@ -43,6 +43,8 @@ add_library(llmi
   src/util/json.cpp
   src/util/thread_pool.cpp
   src/model/safetensors.cpp
+  src/model/safetensors_index.cpp
+  src/model/weights.cpp
   src/model/gguf.cpp
   src/model/model.cpp
   src/model/kernels.cpp
@@ -98,8 +100,10 @@ if(LLMI_BUILD_TESTS)
     tests/utf8_test.cpp
     tests/json_test.cpp
     tests/safetensors_test.cpp
+    tests/safetensors_index_test.cpp
     tests/gguf_test.cpp
     tests/model_test.cpp
+    tests/sharded_model_test.cpp
     tests/tokenizer_test.cpp
     tests/transformer_test.cpp
     tests/sampling_test.cpp
@@ -122,7 +126,7 @@ if(LLMI_BUILD_TESTS)
 endif()
 
 if(LLMI_BUILD_FUZZERS)
-  foreach(target fuzz_json fuzz_safetensors fuzz_gguf fuzz_config fuzz_tokenizer fuzz_server_request fuzz_grammar)
+  foreach(target fuzz_json fuzz_safetensors fuzz_safetensors_index fuzz_gguf fuzz_config fuzz_tokenizer fuzz_server_request fuzz_grammar)
     add_executable(${target} fuzz/${target}.cpp)
     target_compile_options(${target} PRIVATE -fsanitize=fuzzer)
     target_link_options(${target} PRIVATE -fsanitize=fuzzer)

@@ -53,7 +53,7 @@ def gguf_file(tensors, metadata=None, alignment=32):
 def main():
     out = pathlib.Path(sys.argv[1])
     root = pathlib.Path(__file__).resolve().parent.parent
-    for d in ("safetensors", "gguf", "json", "config", "tokenizer", "server_request", "grammar"):
+    for d in ("safetensors", "safetensors_index", "gguf", "json", "config", "tokenizer", "server_request", "grammar"):
         (out / d).mkdir(parents=True, exist_ok=True)
     seeds = {
         "a": {"w": ("F32", [2, 2], struct.pack("<4f", 1, -2, 0.5, 3))},
@@ -63,6 +63,16 @@ def main():
     }
     for k, tensors in seeds.items():
         (out / "safetensors" / f"seed-{k}").write_bytes(safetensors_file(tensors, {"format": "pt"} if k == "a" else None))
+
+    index_seeds = {
+        "two-shard": {"metadata": {"total_size": 20},
+                      "weight_map": {"model.embed_tokens.weight": "model-00001-of-00002.safetensors",
+                                     "model.norm.weight": "model-00002-of-00002.safetensors",
+                                     "lm_head.weight": "model-00002-of-00002.safetensors"}},
+        "one-shard": {"weight_map": {"a.weight": "model.safetensors", "b.weight": "model.safetensors"}},
+    }
+    for k, idx in index_seeds.items():
+        (out / "safetensors_index" / f"seed-{k}").write_bytes(json.dumps(idx).encode())
 
     gguf_seeds = {
         "f32": ({"w": (0, [4], struct.pack("<4f", 1, -2, 0.5, 3))},
